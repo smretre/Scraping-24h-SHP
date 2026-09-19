@@ -86,7 +86,6 @@ def resolve_shopee_url(url):
     """Resolve URLs encurtadas da Shopee com timeout curto"""
     print(f"🔄 Expandindo URL curta: {url}", flush=True)
     try:
-        # Timeout rigoroso de 5 segundos para não travar o bot no Render
         resp = curl_requests.get(url, impersonate="chrome120", allow_redirects=True, timeout=5)
         print(f"🔗 URL Expandida: {resp.url}", flush=True)
         return resp.url
@@ -95,11 +94,11 @@ def resolve_shopee_url(url):
         return url
 
 def get_shopee_product_info(product_url):
-    """Obtém informações e gera o link de afiliado da Shopee via API Oficial"""
+    """Obtém dados completos e gera link de afiliado Shopee"""
     print("🚀 Iniciando busca de informações da Shopee...", flush=True)
     final_url = resolve_shopee_url(product_url)
 
-    # 1. EXTRAÇÃO DE SHOPID E ITEMID DA URL
+    # 1. EXTRAÇÃO DE SHOPID E ITEMID
     match = (
         re.search(r'shopee\.com\.br/[^/]+/(\d+)/(\d+)', final_url) or 
         re.search(r'i\.(\d+)\.(\d+)', final_url) or 
@@ -113,13 +112,16 @@ def get_shopee_product_info(product_url):
     if match:
         print(f"🎯 IDs Encontrados -> ShopID: {shop_id} | ItemID: {item_id}", flush=True)
 
-    # 2. API OFICIAL DE AFILIADOS (GraphQL)
+    short_link = None
+    title = None
+    image_url = None
+    price_str = None
+
+    # 2. GERAR LINK DE AFILIADO VIA API OFICIAL (GraphQL)
     if SHOPEE_APP_ID and SHOPEE_SECRET:
-        print("📡 Tentando API Oficial de Afiliados...", flush=True)
+        print("📡 Gerando Link de Afiliado via API Oficial...", flush=True)
         try:
             timestamp = int(time.time())
-            
-            # ESTRATÉGIA A: Gerar Link de Afiliado Curto direto da URL Original
             mutation = """
             mutation GenerateLink($originUrl: String!) {
                 generateShortLink(input: { originUrl: $originUrl }) {
@@ -135,96 +137,88 @@ def get_shopee_product_info(product_url):
                 "Authorization": f"SHA256 Credential={SHOPEE_APP_ID}, Timestamp={timestamp}, Signature={signature}"
             }
             
-            api_resp = curl_requests.post(
-                "https://open-api.affiliate.shopee.com.br/graphql", 
-                data=payload, 
-                headers=headers, 
-                timeout=8
-            )
-            
+            api_resp = curl_requests.post("https://open-api.affiliate.shopee.com.br/graphql", data=payload, headers=headers, timeout=8)
             if api_resp.status_code == 200:
-                res_data = api_resp.json()
-                short_link = res_data.get("data", {}).get("generateShortLink", {}).get("shortLink")
-                
+                short_link = api_resp.json().get("data", {}).get("generateShortLink", {}).get("shortLink")
                 if short_link:
-                    print(f"✅ Sucesso na geração de Link Curto: {short_link}", flush=True)
-                    
-                    # Agora busca o título/detalhes no productOfferV2 usando itemId ou o próprio link
-                    title = "Produto Shopee"
-                    image_url = None
-                    price_str = "Confira no site"
-                    
-                    # Consulta secundária para obter título/imagem
-                    query_prod = """
-                    query GetProduct($itemId: Int64) {
-                        productOfferV2(itemId: $itemId, limit: 1) {
-                            nodes {
-                                productName
-                                imageUrl
-                                priceMin
-                            }
-                        }
-                    }
-                    """
-                    if item_id:
-                        p_payload = json.dumps({"query": query_prod, "variables": {"itemId": item_id}})
-                        p_sig = generate_shopee_signature(SHOPEE_APP_ID, SHOPEE_SECRET, p_payload, timestamp)
-                        p_headers = {
-                            "Content-Type": "application/json",
-                            "Authorization": f"SHA256 Credential={SHOPEE_APP_ID}, Timestamp={timestamp}, Signature={p_sig}"
-                        }
-                        p_resp = curl_requests.post("https://open-api.affiliate.shopee.com.br/graphql", data=p_payload, headers=p_headers, timeout=5)
-                        if p_resp.status_code == 200:
-                            p_nodes = p_resp.json().get("data", {}).get("productOfferV2", {}).get("nodes", [])
-                            if p_nodes:
-                                title = p_nodes[0].get("productName", title)
-                                image_url = p_nodes[0].get("imageUrl")
-                                p_min = p_nodes[0].get("priceMin")
-                                if p_min:
-                                    price_str = f"R$ {float(p_min):.2f}".replace('.', ',')
-
-                    return {
-                        "title": title,
-                        "image": image_url,
-                        "price": price_str,
-                        "link": short_link
-                    }
-
+                    print(f"✅ Link de Afiliado Criado: {short_link}", flush=True)
         except Exception as e:
-            print(f"⚠️ Erro na execução da API Oficial: {e}", flush=True)
+            print(f"⚠️ Erro ao gerar link de afiliado: {e}", flush=True)
 
-    # 3. FALLBACK VIA METATAGS HTML
-    print("🌐 Tentando obter via Metatags HTML...", flush=True)
-    try:
-        clean_url = f"https://shopee.com.br/product/{shop_id}/{item_id}" if shop_id and item_id else final_url
-        resp = curl_requests.get(clean_url, impersonate="chrome120", timeout=8)
-        soup = BeautifulSoup(resp.text, "html.parser")
-        
-        og_title = soup.find("meta", property="og:title") or soup.find("meta", attrs={"name": "twitter:title"})
-        og_image = soup.find("meta", property="og:image") or soup.find("meta", attrs={"name": "twitter:image"})
-        
-        if og_title and og_image:
-            title_text = og_title["content"].split(" | ")[0]
-            print(f"✅ Sucesso via HTML Metatags: {title_text[:30]}...", flush=True)
-            return {
-                "title": title_text,
-                "image": og_image["content"],
-                "price": "Confira no site",
-                "link": final_url
+    # Caso não tenha gerado link de afiliado, usa a URL final como fallback
+    affiliate_link = short_link or final_url
+
+    # 3. OBTER DADOS DO PRODUTO (TÍTULO, IMAGEM, PREÇO) VIA API PÚBLICA PDP
+    if shop_id and item_id:
+        print("🔍 Buscando Título, Foto e Preço do produto...", flush=True)
+        try:
+            pdp_url = f"https://shopee.com.br/api/v4/item/get?itemid={item_id}&shopid={shop_id}"
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Referer": f"https://shopee.com.br/product/{shop_id}/{item_id}"
             }
-    except Exception as e:
-        print(f"⚠️ Erro no scraping HTML: {e}", flush=True)
+            
+            resp = curl_requests.get(pdp_url, headers=headers, impersonate="chrome120", timeout=6)
+            if resp.status_code == 200:
+                item_data = resp.json().get("data", {})
+                title = item_data.get("name")
+                
+                # Foto Principal na CDN da Shopee
+                img_hash = item_data.get("image")
+                if img_hash:
+                    image_url = f"https://down-br.img.susercontent.com/file/{img_hash}"
+                
+                # Preço da Shopee (valor base dividido por 100.000)
+                price_raw = item_data.get("price") or item_data.get("price_min")
+                if price_raw:
+                    price_val = float(price_raw) / 100000.0
+                    price_str = f"R$ {price_val:.2f}".replace('.', ',')
+        except Exception as e:
+            print(f"⚠️ Erro na busca de dados PDP: {e}", flush=True)
 
-    print("❌ Falha em todas as tentativas de obter os dados da Shopee.", flush=True)
-    return None
+    # 4. FALLBACK VIA SCRAPING DE METATAGS CASO O PDP FALHE
+    if not image_url or not title:
+        print("🌐 Tentando obter dados restantes via Metatags HTML...", flush=True)
+        try:
+            clean_url = f"https://shopee.com.br/product/{shop_id}/{item_id}" if shop_id and item_id else final_url
+            resp = curl_requests.get(clean_url, impersonate="chrome120", timeout=8)
+            soup = BeautifulSoup(resp.text, "html.parser")
+            
+            og_title = soup.find("meta", property="og:title") or soup.find("meta", attrs={"name": "twitter:title"})
+            og_image = soup.find("meta", property="og:image") or soup.find("meta", attrs={"name": "twitter:image"})
+            
+            if og_title and not title:
+                title = og_title["content"].split(" | ")[0]
+            if og_image and not image_url:
+                image_url = og_image["content"]
+        except Exception as e:
+            print(f"⚠️ Erro no scraping HTML: {e}", flush=True)
+
+    title = title or "Produto Shopee"
+    price_str = price_str or "Confira no site"
+
+    print(f"🎉 Processamento concluído! Título: {title[:25]}... | Preço: {price_str} | Imagem Encontrada: {image_url is not None}", flush=True)
+
+    return {
+        "title": title,
+        "image": image_url,
+        "price": price_str,
+        "link": affiliate_link
+    }
     
 # --- GERADOR DE IMAGEM / CARD ---
 def generate_card_image(image_url, price_str):
     """Gera o card sobrepondo a imagem do produto no template."""
-    try:
-        response = curl_requests.get(image_url, impersonate="chrome120", timeout=10)
-        prod_img = Image.open(BytesIO(response.content)).convert("RGBA")
-    except Exception:
+    prod_img = None
+    if image_url:
+        try:
+            response = curl_requests.get(image_url, impersonate="chrome120", timeout=10)
+            if response.status_code == 200:
+                prod_img = Image.open(BytesIO(response.content)).convert("RGBA")
+        except Exception as e:
+            print(f"⚠️ Erro ao carregar imagem do produto: {e}", flush=True)
+
+    if not prod_img:
         prod_img = Image.new("RGBA", (600, 600), (255, 255, 255))
 
     canvas_width, canvas_height = 800, 1000
