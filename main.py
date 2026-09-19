@@ -133,7 +133,7 @@ def get_shopee_product_info(product_url):
     # 1. Gera o link de afiliado oficial imediatamente
     affiliate_link = converter_para_afiliado(final_url)
 
-    # 2. Extrai ShopID e ItemID da URL para consulta na API PDP
+    # 2. Extrai ShopID e ItemID da URL
     match = (
         re.search(r'shopee\.com\.br/[^/]+/(\d+)/(\d+)', final_url) or 
         re.search(r'i\.(\d+)\.(\d+)', final_url) or 
@@ -148,16 +148,16 @@ def get_shopee_product_info(product_url):
     image_url = None
     price_str = None
 
-    # 3. Consulta a API interna/móvel da Shopee para resgatar dados exatos do produto
+    # 3. Consulta a API principal da Shopee para resgatar dados exatos do produto
     if shop_id and item_id:
-        print(f"🔍 Buscando dados do item via API móvel -> ShopID: {shop_id} | ItemID: {item_id}", flush=True)
+        print(f"🔍 Buscando dados do item via API Shopee -> ShopID: {shop_id} | ItemID: {item_id}", flush=True)
         try:
-            m_url = f"https://shopee.com.br/api/v2/item/get?itemid={item_id}&shopid={shop_id}"
+            api_url = f"https://shopee.com.br/api/v2/item/get?itemid={item_id}&shopid={shop_id}"
             headers = {
-                "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
                 "Referer": f"https://shopee.com.br/product/{shop_id}/{item_id}"
             }
-            resp = curl_requests.get(m_url, headers=headers, impersonate="chrome120", timeout=8)
+            resp = curl_requests.get(api_url, headers=headers, impersonate="chrome120", timeout=8)
             if resp.status_code == 200:
                 item_data = resp.json().get("item", {})
                 title = item_data.get("name")
@@ -173,17 +173,17 @@ def get_shopee_product_info(product_url):
                     price_val = float(price_raw) / 100000.0
                     price_str = f"R$ {price_val:.2f}".replace('.', ',')
         except Exception as e:
-            print(f"⚠️ Erro na busca via API móvel: {e}", flush=True)
+            print(f"⚠️ Erro na busca via API da Shopee: {e}", flush=True)
 
-    # 4. Fallback por metatags HTML se a API móvel falhar
+    # 4. Fallback por metatags HTML se a API falhar
     if not image_url or not title:
-        print("🌐 Tentando Fallback via HTML Móvel...", flush=True)
+        print("🌐 Tentando Fallback via HTML Principal...", flush=True)
         try:
-            m_link = f"https://m.shopee.com.br/product/{shop_id}/{item_id}" if shop_id and item_id else final_url
+            web_link = f"https://shopee.com.br/product/{shop_id}/{item_id}" if shop_id and item_id else final_url
             headers = {
-                "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1"
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
             }
-            resp = curl_requests.get(m_link, headers=headers, impersonate="chrome120", timeout=8)
+            resp = curl_requests.get(web_link, headers=headers, impersonate="chrome120", timeout=8)
             soup = BeautifulSoup(resp.text, "html.parser")
             
             og_title = soup.find("meta", property="og:title") or soup.find("meta", attrs={"name": "twitter:title"})
