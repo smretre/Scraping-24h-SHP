@@ -93,12 +93,47 @@ def resolve_shopee_url(url):
         print(f"⚠️ Aviso ao expandir URL (usando original): {e}", flush=True)
         return url
 
+def converter_para_afiliado(url):
+    """Converte qualquer link da Shopee em link de afiliado oficial via API GraphQL"""
+    if not SHOPEE_APP_ID or not SHOPEE_SECRET:
+        return url
+
+    timestamp = int(time.time())
+    query_obj = {
+        "query": "mutation($link: String!){generateShortLink(input:{originUrl:$link}){shortLink}}",
+        "variables": {"link": url},
+        "operationName": None
+    }
+    
+    payload = json.dumps(query_obj)
+    signature = generate_shopee_signature(SHOPEE_APP_ID, SHOPEE_SECRET, payload, timestamp)
+
+    try:
+        headers = {
+            'Content-Type': 'application/json',
+            'Authorization': f'SHA256 Credential={SHOPEE_APP_ID}, Timestamp={timestamp}, Signature={signature}'
+        }
+        res = curl_requests.post("https://open-api.affiliate.shopee.com.br/graphql", data=payload, headers=headers, timeout=8)
+        
+        if res.status_code == 200:
+            res_data = res.json()
+            short_link = res_data.get("data", {}).get("generateShortLink", {}).get("shortLink")
+            if short_link:
+                return short_link
+    except Exception as e:
+        print(f"⚠️ Erro ao converter link para afiliado: {e}", flush=True)
+
+    return url
+
 def get_shopee_product_info(product_url):
-    """Obtém dados completos e gera link de afiliado Shopee via API de Afiliados"""
+    """Obtém dados completos do produto e gera o link de afiliado"""
     print("🚀 Iniciando busca de informações da Shopee...", flush=True)
     final_url = resolve_shopee_url(product_url)
+    
+    # 1. Gera o link de afiliado oficial imediatamente
+    affiliate_link = converter_para_afiliado(final_url)
 
-    # 1. EXTRAÇÃO DE SHOPID E ITEMID
+    # 2. Extrai ShopID e ItemID da URL para consulta na API PDP
     match = (
         re.search(r'shopee\.com\.br/[^/]+/(\d+)/(\d+)', final_url) or 
         re.search(r'i\.(\d+)\.(\d+)', final_url) or 
@@ -109,113 +144,46 @@ def get_shopee_product_info(product_url):
     shop_id = int(match.group(1)) if match else None
     item_id = int(match.group(2)) if match else None
 
-    if match:
-        print(f"🎯 IDs Encontrados -> ShopID: {shop_id} | ItemID: {item_id}", flush=True)
-
-    short_link = None
     title = None
     image_url = None
     price_str = None
 
-    # 2. GERAR LINK E OBTER OFERTA VIA API OFICIAL DE AFILIADOS (GraphQL)
-    if SHOPEE_APP_ID and SHOPEE_SECRET:
-        print("📡 Consultando API Oficial de Afiliados...", flush=True)
+    # 3. Consulta a API interna/móvel da Shopee para resgatar dados exatos do produto
+    if shop_id and item_id:
+        print(f"🔍 Buscando dados do item via API móvel -> ShopID: {shop_id} | ItemID: {item_id}", flush=True)
         try:
-            timestamp = int(time.time())
-
-            # A. Gerar Link Curto de Afiliado
-            mutation = """
-            mutation GenerateLink($originUrl: String!) {
-                generateShortLink(input: { originUrl: $originUrl }) {
-                    shortLink
-                }
-            }
-            """
-            payload = json.dumps({"query": mutation, "variables": {"originUrl": final_url}})
-            signature = generate_shopee_signature(SHOPEE_APP_ID, SHOPEE_SECRET, payload, timestamp)
-            
+            m_url = f"https://shopee.com.br/api/v2/item/get?itemid={item_id}&shopid={shop_id}"
             headers = {
-                "Content-Type": "application/json",
-                "Authorization": f"SHA256 Credential={SHOPEE_APP_ID}, Timestamp={timestamp}, Signature={signature}"
-            }
-            
-            api_resp = curl_requests.post("https://open-api.affiliate.shopee.com.br/graphql", data=payload, headers=headers, timeout=8)
-            if api_resp.status_code == 200:
-                short_link = api_resp.json().get("data", {}).get("generateShortLink", {}).get("shortLink")
-                if short_link:
-                    print(f"✅ Link de Afiliado Criado: {short_link}", flush=True)
-
-            # B. Consultar Informações do Produto (productOfferV2) via itemId
-            if item_id:
-                query_prod = """
-                query GetProductOffer($itemId: Int64) {
-                    productOfferV2(itemId: $itemId, limit: 1) {
-                        nodes {
-                            productName
-                            imageUrl
-                            priceMin
-                        }
-                    }
-                }
-                """
-                p_payload = json.dumps({"query": query_prod, "variables": {"itemId": item_id}})
-                p_signature = generate_shopee_signature(SHOPEE_APP_ID, SHOPEE_SECRET, p_payload, timestamp)
-                p_headers = {
-                    "Content-Type": "application/json",
-                    "Authorization": f"SHA256 Credential={SHOPEE_APP_ID}, Timestamp={timestamp}, Signature={p_signature}"
-                }
-                p_resp = curl_requests.post("https://open-api.affiliate.shopee.com.br/graphql", data=p_payload, headers=p_headers, timeout=8)
-                if p_resp.status_code == 200:
-                    nodes = p_resp.json().get("data", {}).get("productOfferV2", {}).get("nodes", [])
-                    if nodes:
-                        p_info = nodes[0]
-                        title = p_info.get("productName")
-                        image_url = p_info.get("imageUrl")
-                        p_min = p_info.get("priceMin")
-                        if p_min:
-                            try:
-                                price_str = f"R$ {float(p_min):.2f}".replace('.', ',')
-                            except Exception:
-                                price_str = f"R$ {p_min}"
-                        print(f"✅ Dados obtidos via API de Afiliados: Título: {title[:20]}... | Preço: {price_str}", flush=True)
-
-        except Exception as e:
-            print(f"⚠️ Erro ao consultar API Oficial: {e}", flush=True)
-
-    affiliate_link = short_link or final_url
-
-    # 3. FALLBACK VIA API PÚBLICA PDP DA SHOPEE (caso a API de Afiliados não traga o produto)
-    if (not image_url or not title or not price_str) and shop_id and item_id:
-        print("🔍 Tentando Fallback via API PDP pública...", flush=True)
-        try:
-            pdp_url = f"https://shopee.com.br/api/v4/item/get?itemid={item_id}&shopid={shop_id}"
-            headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1",
                 "Referer": f"https://shopee.com.br/product/{shop_id}/{item_id}"
             }
-            resp = curl_requests.get(pdp_url, headers=headers, impersonate="chrome120", timeout=6)
+            resp = curl_requests.get(m_url, headers=headers, impersonate="chrome120", timeout=8)
             if resp.status_code == 200:
-                item_data = resp.json().get("data", {})
-                if not title:
-                    title = item_data.get("name")
-                if not image_url:
-                    img_hash = item_data.get("image")
-                    if img_hash:
-                        image_url = f"https://down-br.img.susercontent.com/file/{img_hash}"
-                if not price_str:
-                    price_raw = item_data.get("price") or item_data.get("price_min")
-                    if price_raw:
-                        price_val = float(price_raw) / 100000.0
-                        price_str = f"R$ {price_val:.2f}".replace('.', ',')
+                item_data = resp.json().get("item", {})
+                title = item_data.get("name")
+                
+                images = item_data.get("images", [])
+                if images:
+                    image_url = f"https://down-br.img.susercontent.com/file/{images[0]}"
+                elif item_data.get("image"):
+                    image_url = f"https://down-br.img.susercontent.com/file/{item_data.get('image')}"
+                
+                price_raw = item_data.get("price") or item_data.get("price_min")
+                if price_raw:
+                    price_val = float(price_raw) / 100000.0
+                    price_str = f"R$ {price_val:.2f}".replace('.', ',')
         except Exception as e:
-            print(f"⚠️ Erro no fallback PDP: {e}", flush=True)
+            print(f"⚠️ Erro na busca via API móvel: {e}", flush=True)
 
-    # 4. FALLBACK FINAL VIA METATAGS
+    # 4. Fallback por metatags HTML se a API móvel falhar
     if not image_url or not title:
-        print("🌐 Tentando Fallback via Metatags HTML...", flush=True)
+        print("🌐 Tentando Fallback via HTML Móvel...", flush=True)
         try:
-            clean_url = f"https://shopee.com.br/product/{shop_id}/{item_id}" if shop_id and item_id else final_url
-            resp = curl_requests.get(clean_url, impersonate="chrome120", timeout=8)
+            m_link = f"https://m.shopee.com.br/product/{shop_id}/{item_id}" if shop_id and item_id else final_url
+            headers = {
+                "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1"
+            }
+            resp = curl_requests.get(m_link, headers=headers, impersonate="chrome120", timeout=8)
             soup = BeautifulSoup(resp.text, "html.parser")
             
             og_title = soup.find("meta", property="og:title") or soup.find("meta", attrs={"name": "twitter:title"})
