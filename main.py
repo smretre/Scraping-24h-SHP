@@ -95,7 +95,7 @@ def resolve_shopee_url(url):
         return url
 
 def get_shopee_product_info(product_url):
-    """Obtém informações do produto com tratamento rigoroso de timeouts e erros"""
+    """Obtém informações do produto com detalhamento de erros no log"""
     print("🚀 Iniciando busca de informações da Shopee...", flush=True)
     final_url = resolve_shopee_url(product_url)
 
@@ -113,7 +113,7 @@ def get_shopee_product_info(product_url):
     if match:
         print(f"🎯 IDs Encontrados -> ShopID: {shop_id} | ItemID: {item_id}", flush=True)
 
-    # 2. TENTATIVA 1: API OFICIAL DE AFILIADOS SHOPEE (GraphQL)
+    # 2. TENTATIVA VIA API OFICIAL DE AFILIADOS (GraphQL)
     if SHOPEE_APP_ID and SHOPEE_SECRET:
         print("📡 Tentando API Oficial de Afiliados...", flush=True)
         try:
@@ -138,10 +138,12 @@ def get_shopee_product_info(product_url):
                 "Authorization": f"SHA256 Credential={SHOPEE_APP_ID}, Timestamp={timestamp}, Signature={signature}"
             }
             
-            api_resp = curl_requests.post("https://open-api.affiliate.shopee.com.br/graphql", data=payload, headers=headers, timeout=5)
+            api_resp = curl_requests.post("https://open-api.affiliate.shopee.com.br/graphql", data=payload, headers=headers, timeout=8)
+            print(f"ℹ️ Shopee Affiliate API Status: {api_resp.status_code}", flush=True)
             
             if api_resp.status_code == 200:
                 res_data = api_resp.json()
+                print(f"ℹ️ Resposta API Oficial: {json.dumps(res_data)[:200]}...", flush=True)
                 nodes = res_data.get("data", {}).get("productOfferV2", {}).get("nodes", [])
                 if nodes:
                     prod = nodes[0]
@@ -156,12 +158,15 @@ def get_shopee_product_info(product_url):
                     }
         except Exception as e:
             print(f"⚠️ Erro na API Oficial: {e}", flush=True)
+    else:
+        print("⚠️ SHOPEE_APP_ID ou SHOPEE_SECRET não configurados no Render!", flush=True)
 
-    # 3. TENTATIVA 2: METATAGS HTML (RÁPIDO E DIRETO)
+    # 3. TENTATIVA VIA METATAGS HTML
     print("🌐 Tentando obter via Metatags HTML...", flush=True)
     try:
         clean_url = f"https://shopee.com.br/product/{shop_id}/{item_id}" if shop_id and item_id else final_url
-        resp = curl_requests.get(clean_url, impersonate="chrome120", timeout=5)
+        resp = curl_requests.get(clean_url, impersonate="chrome120", timeout=8)
+        print(f"ℹ️ HTML Fetch Status: {resp.status_code}", flush=True)
         soup = BeautifulSoup(resp.text, "html.parser")
         
         og_title = soup.find("meta", property="og:title") or soup.find("meta", attrs={"name": "twitter:title"})
@@ -179,41 +184,9 @@ def get_shopee_product_info(product_url):
     except Exception as e:
         print(f"⚠️ Erro no scraping HTML: {e}", flush=True)
 
-    # 4. TENTATIVA 3: API PÚBLICA PDP (V4)
-    if shop_id and item_id:
-        print("🔗 Tentando API Pública PDP V4...", flush=True)
-        try:
-            api_url = f"https://shopee.com.br/api/v4/item/get?itemid={item_id}&shopid={shop_id}"
-            headers = {
-                "Referer": f"https://shopee.com.br/product/{shop_id}/{item_id}",
-                "X-Shopee-Language": "pt-BR"
-            }
-            
-            api_resp = curl_requests.get(api_url, headers=headers, impersonate="chrome120", timeout=5)
-            
-            if api_resp.status_code == 200:
-                data = api_resp.json().get("data") or {}
-                title = data.get("name")
-                image_id = data.get("image")
-                
-                price_raw = data.get("price") or data.get("price_min")
-                price = f"R$ {price_raw / 100000:.2f}".replace('.', ',') if price_raw else None
-
-                if title and image_id:
-                    image_url = f"https://down-br.img.susercontent.com/file/{image_id}"
-                    print(f"✅ Sucesso via API Pública V4: {title[:30]}...", flush=True)
-                    return {
-                        "title": title,
-                        "image": image_url,
-                        "price": price or "Confira no site",
-                        "link": final_url
-                    }
-        except Exception as e:
-            print(f"⚠️ Erro na API V4: {e}", flush=True)
-
     print("❌ Falha em todas as tentativas de obter os dados da Shopee.", flush=True)
     return None
-
+    
 # --- GERADOR DE IMAGEM / CARD ---
 def generate_card_image(image_url, price_str):
     """Gera o card sobrepondo a imagem do produto no template."""
