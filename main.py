@@ -263,7 +263,6 @@ async def process_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Erro ao gerar o PIX. Tente novamente mais tarde.")
 
 def main():
-    threading.Thread(target=run_flask, daemon=True).start()
     telegram_app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     telegram_app.add_handler(CommandHandler("start", start))
     telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, process_link))
