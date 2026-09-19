@@ -4,7 +4,6 @@ import sqlite3
 import threading
 import time
 import hashlib
-import requests
 import json
 from bs4 import BeautifulSoup
 from flask import Flask, request, jsonify
@@ -13,6 +12,7 @@ from PIL import Image, ImageDraw, ImageFont
 from io import BytesIO
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
+from curl_cffi import requests as curl_requests
 
 # --- VARIÁVEIS DE AMBIENTE ---
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
@@ -78,20 +78,10 @@ def activate_subscription(telegram_id):
 # --- INTEGRAÇÃO COM A API DA SHOPEE ---
 
 def resolve_shopee_url(url):
-    """Resolve URLs encurtadas da Shopee criando uma sessão prévia para contornar bloqueios"""
+    """Resolve URLs encurtadas da Shopee imitando perfeitamente o navegador Chrome"""
     print(f"🔄 Expandindo URL curta: {url}", flush=True)
     try:
-        session = requests.Session()
-        session.headers.update({
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-            "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8",
-            "Sec-Ch-Ua": '"Google Chrome";v="123", "Not:A-Brand";v="8", "Chromium";v="123"',
-            "Sec-Ch-Ua-Mobile": "?0",
-            "Sec-Ch-Ua-Platform": '"Windows"'
-        })
-        session.get("https://shopee.com.br/", timeout=5)
-        resp = session.get(url, allow_redirects=True, timeout=10)
+        resp = curl_requests.get(url, impersonate="chrome120", allow_redirects=True, timeout=10)
         print(f"🔗 URL Expandida: {resp.url}", flush=True)
         return resp.url
     except Exception as e:
@@ -99,7 +89,7 @@ def resolve_shopee_url(url):
         return url
 
 def get_shopee_product_info(product_url):
-    """Extrai informações do produto tratando todos os formatos de URL e chamadas da Shopee"""
+    """Extrai informações do produto burlando o bloqueio da Shopee via curl_cffi"""
     final_url = resolve_shopee_url(product_url)
 
     # 1. EXTRAÇÃO DE SHOPID E ITEMID DA URL
@@ -114,19 +104,15 @@ def get_shopee_product_info(product_url):
         shop_id, item_id = match.group(1), match.group(2)
         print(f"🎯 IDs Encontrados -> ShopID: {shop_id} | ItemID: {item_id}", flush=True)
         
-        # TENTATIVA 1: API V4 GET ITEM
+        # TENTATIVA 1: API V4 GET ITEM COM IMPERSONATE CHROME
         try:
             api_url = f"https://shopee.com.br/api/v4/item/get?itemid={item_id}&shopid={shop_id}"
-            headers_api = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
-                "Accept": "application/json",
-                "Accept-Language": "pt-BR,pt;q=0.9",
+            headers = {
                 "Referer": f"https://shopee.com.br/product/{shop_id}/{item_id}",
-                "X-Shopee-Language": "pt-BR",
-                "X-Requested-With": "XMLHttpRequest"
+                "X-Shopee-Language": "pt-BR"
             }
             
-            api_resp = requests.get(api_url, headers=headers_api, timeout=8)
+            api_resp = curl_requests.get(api_url, headers=headers, impersonate="chrome120", timeout=10)
             
             if api_resp.status_code == 200:
                 data = api_resp.json().get("data") or {}
@@ -148,38 +134,10 @@ def get_shopee_product_info(product_url):
         except Exception as e:
             print(f"⚠️ Erro na API V4: {e}", flush=True)
 
-        # TENTATIVA 2: API PDP GET PC
-        try:
-            pdp_url = f"https://shopee.com.br/api/v4/pdp/get_pc?itemid={item_id}&shopid={shop_id}"
-            pdp_resp = requests.get(pdp_url, headers={"User-Agent": "Mozilla/5.0", "X-Shopee-Language": "pt-BR"}, timeout=8)
-            if pdp_resp.status_code == 200:
-                data = pdp_resp.json().get("data") or {}
-                item = data.get("item") or {}
-                title = item.get("title")
-                image_id = item.get("image")
-                price_raw = item.get("price")
-                
-                if title and image_id:
-                    price = f"R$ {price_raw / 100000:.2f}".replace('.', ',') if price_raw else "Confira no site"
-                    image_url = f"https://down-br.img.susercontent.com/file/{image_id}"
-                    print(f"✅ Sucesso via API PDP: {title[:30]}...", flush=True)
-                    return {
-                        "title": title,
-                        "image": image_url,
-                        "price": price,
-                        "link": final_url
-                    }
-        except Exception as e:
-            print(f"⚠️ Erro na API PDP: {e}", flush=True)
-
-    # 3. FALLBACK VIA HTML METATAGS
+    # 2. FALLBACK VIA HTML METATAGS
     try:
         clean_url = f"https://shopee.com.br/product/{match.group(1)}/{match.group(2)}" if match else final_url
-        headers_html = {
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
-            "Accept-Language": "pt-BR,pt;q=0.9"
-        }
-        resp = requests.get(clean_url, headers=headers_html, timeout=8)
+        resp = curl_requests.get(clean_url, impersonate="chrome120", timeout=10)
         soup = BeautifulSoup(resp.text, "html.parser")
         
         og_title = soup.find("meta", property="og:title") or soup.find("meta", attrs={"name": "twitter:title"})
@@ -203,7 +161,7 @@ def get_shopee_product_info(product_url):
 def generate_card_image(image_url, price_str):
     """Gera o card sobrepondo a imagem do produto no template."""
     try:
-        response = requests.get(image_url, timeout=10)
+        response = curl_requests.get(image_url, impersonate="chrome120", timeout=10)
         prod_img = Image.open(BytesIO(response.content)).convert("RGBA")
     except Exception:
         prod_img = Image.new("RGBA", (600, 600), (255, 255, 255))
