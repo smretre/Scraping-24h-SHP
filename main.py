@@ -95,7 +95,7 @@ def resolve_shopee_url(url):
         return url
 
 def get_shopee_product_info(product_url):
-    """Obtém informações do produto da Shopee via API Oficial GraphQL"""
+    """Obtém informações e gera o link de afiliado da Shopee via API Oficial"""
     print("🚀 Iniciando busca de informações da Shopee...", flush=True)
     final_url = resolve_shopee_url(product_url)
 
@@ -113,48 +113,21 @@ def get_shopee_product_info(product_url):
     if match:
         print(f"🎯 IDs Encontrados -> ShopID: {shop_id} | ItemID: {item_id}", flush=True)
 
-    # 2. TENTATIVA VIA API OFICIAL DE AFILIADOS (GraphQL)
+    # 2. API OFICIAL DE AFILIADOS (GraphQL)
     if SHOPEE_APP_ID and SHOPEE_SECRET:
         print("📡 Tentando API Oficial de Afiliados...", flush=True)
         try:
             timestamp = int(time.time())
             
-            # Query ajustada de acordo com a especificação da Shopee GraphQL
-            if item_id:
-                query = """
-                query GetProductInfo($itemId: Int64, $shopId: Int64) {
-                    productOfferV2(itemId: $itemId, shopId: $shopId, limit: 1) {
-                        nodes {
-                            productName
-                            imageUrl
-                            priceMin
-                            priceMax
-                            offerLink
-                            productLink
-                        }
-                    }
+            # ESTRATÉGIA A: Gerar Link de Afiliado Curto direto da URL Original
+            mutation = """
+            mutation GenerateLink($originUrl: String!) {
+                generateShortLink(input: { originUrl: $originUrl }) {
+                    shortLink
                 }
-                """
-                variables = {"itemId": item_id, "shopId": shop_id}
-            else:
-                # Caso a URL seja abreviada ou sem IDs explícitos
-                query = """
-                query GetProductInfo($keyword: String) {
-                    productOfferV2(keyword: $keyword, limit: 1) {
-                        nodes {
-                            productName
-                            imageUrl
-                            priceMin
-                            priceMax
-                            offerLink
-                            productLink
-                        }
-                    }
-                }
-                """
-                variables = {"keyword": final_url}
-
-            payload = json.dumps({"query": query, "variables": variables})
+            }
+            """
+            payload = json.dumps({"query": mutation, "variables": {"originUrl": final_url}})
             signature = generate_shopee_signature(SHOPEE_APP_ID, SHOPEE_SECRET, payload, timestamp)
             
             headers = {
@@ -169,38 +142,58 @@ def get_shopee_product_info(product_url):
                 timeout=8
             )
             
-            print(f"ℹ️ Shopee Affiliate API Status: {api_resp.status_code}", flush=True)
-            
             if api_resp.status_code == 200:
                 res_data = api_resp.json()
-                nodes = res_data.get("data", {}).get("productOfferV2", {}).get("nodes", [])
+                short_link = res_data.get("data", {}).get("generateShortLink", {}).get("shortLink")
                 
-                if nodes:
-                    prod = nodes[0]
-                    # Preço na API vem como priceMin / priceMax ou valor numérico
-                    raw_price = prod.get("priceMin") or prod.get("price") or 0
-                    try:
-                        price_val = float(raw_price)
-                        price_str = f"R$ {price_val:.2f}".replace('.', ',') if price_val > 0 else "Confira no site"
-                    except ValueError:
-                        price_str = "Confira no site"
-
-                    print(f"✅ Sucesso via API Oficial: {prod.get('productName')[:30]}...", flush=True)
-                    return {
-                        "title": prod.get("productName"),
-                        "image": prod.get("imageUrl"),
-                        "price": price_str,
-                        "link": prod.get("offerLink") or prod.get("productLink") or final_url
+                if short_link:
+                    print(f"✅ Sucesso na geração de Link Curto: {short_link}", flush=True)
+                    
+                    # Agora busca o título/detalhes no productOfferV2 usando itemId ou o próprio link
+                    title = "Produto Shopee"
+                    image_url = None
+                    price_str = "Confira no site"
+                    
+                    # Consulta secundária para obter título/imagem
+                    query_prod = """
+                    query GetProduct($itemId: Int64) {
+                        productOfferV2(itemId: $itemId, limit: 1) {
+                            nodes {
+                                productName
+                                imageUrl
+                                priceMin
+                            }
+                        }
                     }
-                else:
-                    print("⚠️ Nenhum produto encontrado na resposta do GraphQL.", flush=True)
-            else:
-                print(f"⚠️ Erro na resposta da API: {api_resp.text}", flush=True)
+                    """
+                    if item_id:
+                        p_payload = json.dumps({"query": query_prod, "variables": {"itemId": item_id}})
+                        p_sig = generate_shopee_signature(SHOPEE_APP_ID, SHOPEE_SECRET, p_payload, timestamp)
+                        p_headers = {
+                            "Content-Type": "application/json",
+                            "Authorization": f"SHA256 Credential={SHOPEE_APP_ID}, Timestamp={timestamp}, Signature={p_sig}"
+                        }
+                        p_resp = curl_requests.post("https://open-api.affiliate.shopee.com.br/graphql", data=p_payload, headers=p_headers, timeout=5)
+                        if p_resp.status_code == 200:
+                            p_nodes = p_resp.json().get("data", {}).get("productOfferV2", {}).get("nodes", [])
+                            if p_nodes:
+                                title = p_nodes[0].get("productName", title)
+                                image_url = p_nodes[0].get("imageUrl")
+                                p_min = p_nodes[0].get("priceMin")
+                                if p_min:
+                                    price_str = f"R$ {float(p_min):.2f}".replace('.', ',')
+
+                    return {
+                        "title": title,
+                        "image": image_url,
+                        "price": price_str,
+                        "link": short_link
+                    }
 
         except Exception as e:
             print(f"⚠️ Erro na execução da API Oficial: {e}", flush=True)
 
-    # 3. FALLBACK VIA SCRAPING METATAGS
+    # 3. FALLBACK VIA METATAGS HTML
     print("🌐 Tentando obter via Metatags HTML...", flush=True)
     try:
         clean_url = f"https://shopee.com.br/product/{shop_id}/{item_id}" if shop_id and item_id else final_url
