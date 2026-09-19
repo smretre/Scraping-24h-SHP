@@ -95,7 +95,7 @@ def resolve_shopee_url(url):
         return url
 
 def get_shopee_product_info(product_url):
-    """Obtém informações do produto com detalhamento de erros no log"""
+    """Obtém informações do produto da Shopee via API Oficial GraphQL"""
     print("🚀 Iniciando busca de informações da Shopee...", flush=True)
     final_url = resolve_shopee_url(product_url)
 
@@ -107,8 +107,8 @@ def get_shopee_product_info(product_url):
         re.search(r'-i\.(\d+)\.(\d+)', final_url)
     )
     
-    shop_id = match.group(1) if match else None
-    item_id = match.group(2) if match else None
+    shop_id = int(match.group(1)) if match else None
+    item_id = int(match.group(2)) if match else None
 
     if match:
         print(f"🎯 IDs Encontrados -> ShopID: {shop_id} | ItemID: {item_id}", flush=True)
@@ -118,19 +118,43 @@ def get_shopee_product_info(product_url):
         print("📡 Tentando API Oficial de Afiliados...", flush=True)
         try:
             timestamp = int(time.time())
-            query = """
-            query GetProductInfo($url: String!) {
-                productOfferV2(productUrl: $url) {
-                    nodes {
-                        productName
-                        imageUrl
-                        price
-                        offerLink
+            
+            # Query ajustada de acordo com a especificação da Shopee GraphQL
+            if item_id:
+                query = """
+                query GetProductInfo($itemId: Int64, $shopId: Int64) {
+                    productOfferV2(itemId: $itemId, shopId: $shopId, limit: 1) {
+                        nodes {
+                            productName
+                            imageUrl
+                            priceMin
+                            priceMax
+                            offerLink
+                            productLink
+                        }
                     }
                 }
-            }
-            """
-            payload = json.dumps({"query": query, "variables": {"url": final_url}})
+                """
+                variables = {"itemId": item_id, "shopId": shop_id}
+            else:
+                # Caso a URL seja abreviada ou sem IDs explícitos
+                query = """
+                query GetProductInfo($keyword: String) {
+                    productOfferV2(keyword: $keyword, limit: 1) {
+                        nodes {
+                            productName
+                            imageUrl
+                            priceMin
+                            priceMax
+                            offerLink
+                            productLink
+                        }
+                    }
+                }
+                """
+                variables = {"keyword": final_url}
+
+            payload = json.dumps({"query": query, "variables": variables})
             signature = generate_shopee_signature(SHOPEE_APP_ID, SHOPEE_SECRET, payload, timestamp)
             
             headers = {
@@ -138,35 +162,49 @@ def get_shopee_product_info(product_url):
                 "Authorization": f"SHA256 Credential={SHOPEE_APP_ID}, Timestamp={timestamp}, Signature={signature}"
             }
             
-            api_resp = curl_requests.post("https://open-api.affiliate.shopee.com.br/graphql", data=payload, headers=headers, timeout=8)
+            api_resp = curl_requests.post(
+                "https://open-api.affiliate.shopee.com.br/graphql", 
+                data=payload, 
+                headers=headers, 
+                timeout=8
+            )
+            
             print(f"ℹ️ Shopee Affiliate API Status: {api_resp.status_code}", flush=True)
             
             if api_resp.status_code == 200:
                 res_data = api_resp.json()
-                print(f"ℹ️ Resposta API Oficial: {json.dumps(res_data)[:200]}...", flush=True)
                 nodes = res_data.get("data", {}).get("productOfferV2", {}).get("nodes", [])
+                
                 if nodes:
                     prod = nodes[0]
-                    price_val = float(prod.get("price", 0))
-                    price_str = f"R$ {price_val:.2f}".replace('.', ',') if price_val > 0 else "Confira no site"
+                    # Preço na API vem como priceMin / priceMax ou valor numérico
+                    raw_price = prod.get("priceMin") or prod.get("price") or 0
+                    try:
+                        price_val = float(raw_price)
+                        price_str = f"R$ {price_val:.2f}".replace('.', ',') if price_val > 0 else "Confira no site"
+                    except ValueError:
+                        price_str = "Confira no site"
+
                     print(f"✅ Sucesso via API Oficial: {prod.get('productName')[:30]}...", flush=True)
                     return {
                         "title": prod.get("productName"),
                         "image": prod.get("imageUrl"),
                         "price": price_str,
-                        "link": prod.get("offerLink") or final_url
+                        "link": prod.get("offerLink") or prod.get("productLink") or final_url
                     }
-        except Exception as e:
-            print(f"⚠️ Erro na API Oficial: {e}", flush=True)
-    else:
-        print("⚠️ SHOPEE_APP_ID ou SHOPEE_SECRET não configurados no Render!", flush=True)
+                else:
+                    print("⚠️ Nenhum produto encontrado na resposta do GraphQL.", flush=True)
+            else:
+                print(f"⚠️ Erro na resposta da API: {api_resp.text}", flush=True)
 
-    # 3. TENTATIVA VIA METATAGS HTML
+        except Exception as e:
+            print(f"⚠️ Erro na execução da API Oficial: {e}", flush=True)
+
+    # 3. FALLBACK VIA SCRAPING METATAGS
     print("🌐 Tentando obter via Metatags HTML...", flush=True)
     try:
         clean_url = f"https://shopee.com.br/product/{shop_id}/{item_id}" if shop_id and item_id else final_url
         resp = curl_requests.get(clean_url, impersonate="chrome120", timeout=8)
-        print(f"ℹ️ HTML Fetch Status: {resp.status_code}", flush=True)
         soup = BeautifulSoup(resp.text, "html.parser")
         
         og_title = soup.find("meta", property="og:title") or soup.find("meta", attrs={"name": "twitter:title"})
