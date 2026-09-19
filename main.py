@@ -49,11 +49,26 @@ def activate_subscription(telegram_id):
     conn.close()
 
 # --- INTEGRAÇÃO COM A API DA SHOPEE ---
+def resolve_shopee_url(url):
+    """Redireciona links encurtados (ex: s.shopee.com.br) e retorna a URL longa completa."""
+    try:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        }
+        response = requests.get(url, headers=headers, allow_redirects=True, timeout=10)
+        return response.url
+    except Exception as e:
+        print(f"Erro ao expandir URL: {e}")
+        return url
+
 def get_shopee_product_info(product_url):
-    """Consulta a API GraphQL de Afiliados da Shopee para obter título, preço e imagem."""
+    """Consulta a API GraphQL de Afiliados da Shopee expandindo o link encurtado antes."""
+    # 1. Expandir o link encurtado para o link longo oficial
+    expanded_url = resolve_shopee_url(product_url)
+    
     timestamp = int(time.time())
     
-    # Query GraphQL da Shopee para conversão e detalhes do produto
+    # Query GraphQL
     query = """
     query {
         productOfferV2(productUrl: "%s") {
@@ -65,11 +80,11 @@ def get_shopee_product_info(product_url):
             }
         }
     }
-    """ % product_url
+    """ % expanded_url
 
     payload = json.dumps({"query": query})
     
-    # Autenticação HMAC-SHA256 exigida pela Shopee
+    # Autenticação HMAC-SHA256 da Shopee
     factor = f"{SHOPEE_APP_ID}{timestamp}{payload}{SHOPEE_SECRET}"
     signature = hashlib.sha256(factor.encode('utf-8')).hexdigest()
 
@@ -95,6 +110,7 @@ def get_shopee_product_info(product_url):
         print(f"Erro na API da Shopee: {e}")
     
     return None
+
 
 # --- GERADOR DE IMAGEM / CARD ---
 def generate_card_image(image_url, price_str):
