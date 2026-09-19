@@ -5,3 +5,4 @@ beautifulsoup4
 mercadopago
 flask
 gunicorn
+curl_cffi
