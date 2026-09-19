@@ -45,7 +45,7 @@ def webhook():
             if payment_info.get("status") == "approved":
                 telegram_id = int(payment_info.get("external_reference"))
                 activate_subscription(telegram_id)
-                print(f"✅ Assinatura ativada para o usuário Telegram ID: {telegram_id}")
+                print(f"✅ Assinatura ativada para o usuário Telegram ID: {telegram_id}", flush=True)
     return jsonify({"status": "ok"}), 200
 
 def run_flask():
@@ -78,50 +78,59 @@ def activate_subscription(telegram_id):
 # --- INTEGRAÇÃO COM A API DA SHOPEE ---
 
 def resolve_shopee_url(url):
-    """Resolve URLs encurtadas da Shopee (s.shopee.com.br / shope.ee)"""
+    """Resolve URLs encurtadas da Shopee criando uma sessão prévia para contornar bloqueios"""
+    print(f"🔄 Expandindo URL curta: {url}", flush=True)
     try:
         session = requests.Session()
         session.headers.update({
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+            "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8"
         })
+        # Estabelece sessão na home para receber cookies válidos
+        session.get("https://shopee.com.br/", timeout=5)
+        
+        # Segue o redirecionamento
         resp = session.get(url, allow_redirects=True, timeout=10)
+        print(f"🔗 URL Expandida: {resp.url}", flush=True)
         return resp.url
     except Exception as e:
-        print(f"Erro ao expandir URL: {e}")
+        print(f"⚠️ Erro ao expandir URL: {e}", flush=True)
         return url
 
 def get_shopee_product_info(product_url):
     """Extrai informações do produto da Shopee via API pública de item ou Scraping"""
     final_url = resolve_shopee_url(product_url)
-    print(f"🔗 URL Processada: {final_url}")
 
     session = requests.Session()
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-        "Referer": "https://shopee.com.br/"
+        "Referer": "https://shopee.com.br/",
+        "x-api-source": "pc"
     }
 
     # 1. TENTATIVA VIA API PÚBLICA DE ITEM DA SHOPEE
     try:
-        match = re.search(r'i\.(\d+)\.(\d+)', final_url) or re.search(r'product/(\d+)/(\d+)', final_url)
+        match = re.search(r'i\.(\d+)\.(\d+)', final_url) or re.search(r'product/(\d+)/(\d+)', final_url) or re.search(r'-i\.(\d+)\.(\d+)', final_url)
         
         if match:
             shop_id, item_id = match.group(1), match.group(2)
-            api_url = f"https://shopee.com.br/api/v4/item/get?itemid={item_id}&shopid={shop_id}"
+            print(f"🎯 IDs Encontrados -> ShopID: {shop_id} | ItemID: {item_id}", flush=True)
             
+            api_url = f"https://shopee.com.br/api/v4/item/get?itemid={item_id}&shopid={shop_id}"
             api_resp = session.get(api_url, headers=headers, timeout=10)
+            
             if api_resp.status_code == 200:
                 data = api_resp.json().get("data", {})
                 title = data.get("name")
                 image_id = data.get("image")
                 
-                # Extrai o preço (Preço na API Shopee vem multiplicado por 100000)
                 price_raw = data.get("price") or data.get("price_min")
                 price = f"R$ {price_raw / 100000:.2f}".replace('.', ',') if price_raw else "Confira no site"
 
                 if title and image_id:
                     image_url = f"https://down-br.img.susercontent.com/file/{image_id}"
-                    print(f"✅ Sucesso via API Interna da Shopee: {title[:20]}...")
+                    print(f"✅ Sucesso via API Shopee: {title[:30]}...", flush=True)
                     return {
                         "title": title,
                         "image": image_url,
@@ -129,18 +138,18 @@ def get_shopee_product_info(product_url):
                         "link": final_url
                     }
     except Exception as e:
-        print(f"⚠️ Falha na consulta de Item API: {e}")
+        print(f"⚠️ Falha na consulta da API Shopee: {e}", flush=True)
 
     # 2. TENTATIVA SECUNDÁRIA VIA METADADOS HTML (FALLBACK)
     try:
         resp = session.get(final_url, headers=headers, timeout=10)
         soup = BeautifulSoup(resp.text, "html.parser")
         
-        og_title = soup.find("meta", property="og:title")
-        og_image = soup.find("meta", property="og:image")
+        og_title = soup.find("meta", property="og:title") or soup.find("meta", attrs={"name": "twitter:title"})
+        og_image = soup.find("meta", property="og:image") or soup.find("meta", attrs={"name": "twitter:image"})
         
         if og_title and og_image:
-            print("✅ Sucesso via HTML Metatags")
+            print("✅ Sucesso via HTML Metatags", flush=True)
             return {
                 "title": og_title["content"],
                 "image": og_image["content"],
@@ -148,7 +157,7 @@ def get_shopee_product_info(product_url):
                 "link": final_url
             }
     except Exception as e:
-        print(f"❌ Erro no fallback HTML: {e}")
+        print(f"❌ Erro no fallback HTML: {e}", flush=True)
 
     return None
 
@@ -176,7 +185,7 @@ def generate_card_image(image_url, price_str):
     card.paste(prod_img, (x_pos, y_pos), prod_img if prod_img.mode == 'RGBA' else None)
 
     # Banner inferior de Preço
-    draw.rectangle([(0, 820), (canvas_width, canvas_height)], fill="#EE4D2D") # Laranja Shopee
+    draw.rectangle([(0, 820), (canvas_width, canvas_height)], fill="#EE4D2D")
     draw.text((40, 850), f"Por: {price_str}", fill="#FFFFFF")
 
     output_stream = BytesIO()
@@ -246,7 +255,6 @@ async def process_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             remaining_str = "Assinante (Acesso Ilimitado)."
 
-        # Ajuste das chaves corretas no dicionário
         card_img = generate_card_image(product_info["image"], product_info["price"])
 
         caption = (
@@ -272,14 +280,13 @@ async def process_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Erro ao gerar o PIX. Tente novamente mais tarde.")
 
 def main():
-    # Inicia o servidor Flask em paralelo (para os webhooks do Mercado Pago)
     threading.Thread(target=run_flask, daemon=True).start()
 
     telegram_app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     telegram_app.add_handler(CommandHandler("start", start))
     telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, process_link))
     
-    print("🤖 Bot iniciado com sucesso!")
+    print("🤖 Bot iniciado com sucesso!", flush=True)
     telegram_app.run_polling()
 
 if __name__ == "__main__":
