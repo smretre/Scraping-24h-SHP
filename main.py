@@ -62,54 +62,66 @@ def resolve_shopee_url(url):
         return url
 
 def get_shopee_product_info(product_url):
-    """Consulta a API GraphQL de Afiliados da Shopee expandindo o link encurtado antes."""
-    # 1. Expandir o link encurtado para o link longo oficial
-    expanded_url = resolve_shopee_url(product_url)
-    
+    """Consulta a API GraphQL de Afiliados da Shopee resolvendo o link e verificando a assinatura."""
+    if not SHOPEE_APP_ID or not SHOPEE_SECRET:
+        print("❌ ERRO: SHOPEE_APP_ID ou SHOPEE_SECRET não configurados no Render!")
+        return None
+
+    # 1. Obter a URL final expandida caso seja um link curto (ex: s.shopee.com.br)
+    final_url = product_url
+    try:
+        headers_browser = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        }
+        res = requests.get(product_url, headers=headers_browser, allow_redirects=True, timeout=8)
+        final_url = res.url
+    except Exception as e:
+        print(f"⚠️ Erro ao expandir URL: {e}")
+
+    # 2. Montar a requisição GraphQL
     timestamp = int(time.time())
     
-    # Query GraphQL
-    query = """
-    query {
-        productOfferV2(productUrl: "%s") {
-            nodes {
-                productName
-                price
-                imageUrl
-                offerLink
-            }
-        }
-    }
-    """ % expanded_url
-
+    # Query limpa sem quebras de linha complexas
+    query = 'query { productOfferV2(productUrl: "' + final_url + '") { nodes { productName price imageUrl offerLink } } }'
+    
     payload = json.dumps({"query": query})
     
-    # Autenticação HMAC-SHA256 da Shopee
+    # 3. Gerar a Assinatura HMAC SHA256 exigida pela Shopee
     factor = f"{SHOPEE_APP_ID}{timestamp}{payload}{SHOPEE_SECRET}"
     signature = hashlib.sha256(factor.encode('utf-8')).hexdigest()
 
-    headers = {
+    headers_api = {
         'Content-Type': 'application/json',
         'Authorization': f'SHA256 Credential={SHOPEE_APP_ID}, Timestamp={timestamp}, Signature={signature}'
     }
 
     try:
-        response = requests.post("https://open-api.affiliate.shopee.com.br/graphql", headers=headers, data=payload, timeout=10)
-        data = response.json()
-        nodes = data.get("data", {}).get("productOfferV2", {}).get("nodes", [])
+        response = requests.post("https://open-api.affiliate.shopee.com.br/graphql", headers=headers_api, data=payload, timeout=10)
+        res_data = response.json()
         
-        if nodes:
+        # Log para inspecionar no Render em caso de erro
+        print(f"Response Shopee API: {res_data}")
+
+        if "errors" in res_data:
+            print(f"❌ Erro retornado pela API Shopee: {res_data['errors']}")
+            return None
+
+        nodes = res_data.get("data", {}).get("productOfferV2", {}).get("nodes", [])
+        
+        if nodes and len(nodes) > 0:
             item = nodes[0]
+            price_val = float(item.get("price", 0))
             return {
-                "title": item.get("productName"),
-                "price": f"R$ {float(item.get('price', 0)):.2f}".replace(".", ","),
+                "title": item.get("productName", "Produto Shopee"),
+                "price": f"R$ {price_val:.2f}".replace(".", ","),
                 "image_url": item.get("imageUrl"),
-                "affiliate_link": item.get("offerLink", product_url)
+                "affiliate_link": item.get("offerLink", final_url)
             }
     except Exception as e:
-        print(f"Erro na API da Shopee: {e}")
+        print(f"❌ Exceção na requisição da Shopee: {e}")
     
     return None
+
 
 
 # --- GERADOR DE IMAGEM / CARD ---
