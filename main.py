@@ -17,8 +17,8 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 MP_ACCESS_TOKEN = os.getenv("MP_ACCESS_TOKEN")
 
 # Credenciais da API de Afiliados da Shopee
-SHOPEE_APP_ID = os.getenv("SHOPEE_APP_ID")
-SHOPEE_SECRET = os.getenv("SHOPEE_SECRET")
+SHOPEE_APP_ID = os.getenv("18333040605")
+SHOPEE_SECRET = os.getenv("G4ZGJLMULADI7SHCW2SWSK3FDJBF2KN5")
 
 # Inicializa SDK do Mercado Pago
 sdk = mercadopago.SDK(MP_ACCESS_TOKEN) if MP_ACCESS_TOKEN else None
