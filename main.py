@@ -17,14 +17,25 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 MP_ACCESS_TOKEN = os.getenv("MP_ACCESS_TOKEN")
 
 # Credenciais da API de Afiliados da Shopee
-SHOPEE_APP_ID = os.getenv("18333040605")
-SHOPEE_SECRET = os.getenv("G4ZGJLMULADI7SHCW2SWSK3FDJBF2KN5")
+SHOPEE_APP_ID = os.getenv("SHOPEE_APP_ID")
+SHOPEE_SECRET = os.getenv("SHOPEE_SECRET")
 
 # Inicializa SDK do Mercado Pago
 sdk = mercadopago.SDK(MP_ACCESS_TOKEN) if MP_ACCESS_TOKEN else None
 
 # Configuração do Banco de Dados SQLite
 DB_FILE = "bot_database.db"
+
+# --- SERVIDOR WEB (WEBHOOK) ---
+app_web = Flask(__name__)
+
+@app_web.route("/", methods=["GET"])
+def home():
+    return "Bot Online!", 200
+
+@app_web.route("/webhook", methods=["POST"])
+def webhook():
+    # ... código existente do webhook
 
 def init_db():
     conn = sqlite3.connect(DB_FILE)
