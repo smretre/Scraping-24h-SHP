@@ -83,14 +83,14 @@ def resolve_shopee_url(url):
     try:
         session = requests.Session()
         session.headers.update({
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-            "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8"
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+            "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8",
+            "Sec-Ch-Ua": '"Google Chrome";v="123", "Not:A-Brand";v="8", "Chromium";v="123"',
+            "Sec-Ch-Ua-Mobile": "?0",
+            "Sec-Ch-Ua-Platform": '"Windows"'
         })
-        # Estabelece sessão na home para receber cookies válidos
         session.get("https://shopee.com.br/", timeout=5)
-        
-        # Segue o redirecionamento
         resp = session.get(url, allow_redirects=True, timeout=10)
         print(f"🔗 URL Expandida: {resp.url}", flush=True)
         return resp.url
@@ -102,7 +102,7 @@ def get_shopee_product_info(product_url):
     """Extrai informações do produto tratando todos os formatos de URL e chamadas da Shopee"""
     final_url = resolve_shopee_url(product_url)
 
-    # 1. EXTRAÇÃO DE SHOPID E ITEMID
+    # 1. EXTRAÇÃO DE SHOPID E ITEMID DA URL
     match = (
         re.search(r'shopee\.com\.br/[^/]+/(\d+)/(\d+)', final_url) or 
         re.search(r'i\.(\d+)\.(\d+)', final_url) or 
@@ -114,11 +114,11 @@ def get_shopee_product_info(product_url):
         shop_id, item_id = match.group(1), match.group(2)
         print(f"🎯 IDs Encontrados -> ShopID: {shop_id} | ItemID: {item_id}", flush=True)
         
-        # Tentativa 1A: API Microservice V4
+        # TENTATIVA 1: API V4 GET ITEM
         try:
             api_url = f"https://shopee.com.br/api/v4/item/get?itemid={item_id}&shopid={shop_id}"
             headers_api = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:123.0) Gecko/20100101 Firefox/123.0",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
                 "Accept": "application/json",
                 "Accept-Language": "pt-BR,pt;q=0.9",
                 "Referer": f"https://shopee.com.br/product/{shop_id}/{item_id}",
@@ -148,20 +148,21 @@ def get_shopee_product_info(product_url):
         except Exception as e:
             print(f"⚠️ Erro na API V4: {e}", flush=True)
 
-        # Tentativa 1B: API Open V2 (Fallback de API)
+        # TENTATIVA 2: API PDP GET PC
         try:
-            api_url_v2 = f"https://shopee.com.br/api/v2/item/get?itemid={item_id}&shopid={shop_id}"
-            api_resp2 = requests.get(api_url_v2, headers={"User-Agent": "Mozilla/5.0"}, timeout=8)
-            if api_resp2.status_code == 200:
-                item = api_resp2.json().get("item") or {}
-                title = item.get("name")
-                images = item.get("images")
+            pdp_url = f"https://shopee.com.br/api/v4/pdp/get_pc?itemid={item_id}&shopid={shop_id}"
+            pdp_resp = requests.get(pdp_url, headers={"User-Agent": "Mozilla/5.0", "X-Shopee-Language": "pt-BR"}, timeout=8)
+            if pdp_resp.status_code == 200:
+                data = pdp_resp.json().get("data") or {}
+                item = data.get("item") or {}
+                title = item.get("title")
+                image_id = item.get("image")
                 price_raw = item.get("price")
                 
-                if title and images:
-                    image_url = f"https://down-br.img.susercontent.com/file/{images[0]}"
+                if title and image_id:
                     price = f"R$ {price_raw / 100000:.2f}".replace('.', ',') if price_raw else "Confira no site"
-                    print(f"✅ Sucesso via API Shopee V2: {title[:30]}...", flush=True)
+                    image_url = f"https://down-br.img.susercontent.com/file/{image_id}"
+                    print(f"✅ Sucesso via API PDP: {title[:30]}...", flush=True)
                     return {
                         "title": title,
                         "image": image_url,
@@ -169,13 +170,14 @@ def get_shopee_product_info(product_url):
                         "link": final_url
                     }
         except Exception as e:
-            print(f"⚠️ Erro na API V2: {e}", flush=True)
+            print(f"⚠️ Erro na API PDP: {e}", flush=True)
 
-    # 2. TENTATIVA SECUNDÁRIA VIA METADADOS HTML
+    # 3. FALLBACK VIA HTML METATAGS
     try:
-        clean_url = f"https://shopee.com.br/product/{shop_id}/{item_id}" if match else final_url
+        clean_url = f"https://shopee.com.br/product/{match.group(1)}/{match.group(2)}" if match else final_url
         headers_html = {
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+            "Accept-Language": "pt-BR,pt;q=0.9"
         }
         resp = requests.get(clean_url, headers=headers_html, timeout=8)
         soup = BeautifulSoup(resp.text, "html.parser")
@@ -196,7 +198,6 @@ def get_shopee_product_info(product_url):
         print(f"❌ Erro no fallback HTML: {e}", flush=True)
 
     return None
-
 
 # --- GERADOR DE IMAGEM / CARD ---
 def generate_card_image(image_url, price_str):
