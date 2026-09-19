@@ -77,8 +77,13 @@ def activate_subscription(telegram_id):
 
 # --- INTEGRAÇÃO COM A API DA SHOPEE ---
 
+def generate_shopee_signature(app_id, secret, payload, timestamp):
+    """Gera a assinatura HMAC-SHA256 para a API de Afiliados da Shopee"""
+    factor = f"{app_id}{timestamp}{payload}{secret}"
+    return hashlib.sha256(factor.encode('utf-8')).hexdigest()
+
 def resolve_shopee_url(url):
-    """Resolve URLs encurtadas da Shopee imitando perfeitamente o navegador Chrome"""
+    """Resolve URLs encurtadas da Shopee imitando o navegador Chrome"""
     print(f"🔄 Expandindo URL curta: {url}", flush=True)
     try:
         resp = curl_requests.get(url, impersonate="chrome120", allow_redirects=True, timeout=10)
@@ -89,7 +94,7 @@ def resolve_shopee_url(url):
         return url
 
 def get_shopee_product_info(product_url):
-    """Extrai informações do produto burlando o bloqueio da Shopee via curl_cffi"""
+    """Obtém informações do produto via API Oficial de Afiliados ou Métodos Alternativos"""
     final_url = resolve_shopee_url(product_url)
 
     # 1. EXTRAÇÃO DE SHOPID E ITEMID DA URL
@@ -100,11 +105,57 @@ def get_shopee_product_info(product_url):
         re.search(r'-i\.(\d+)\.(\d+)', final_url)
     )
     
+    shop_id = match.group(1) if match else None
+    item_id = match.group(2) if match else None
+
     if match:
-        shop_id, item_id = match.group(1), match.group(2)
         print(f"🎯 IDs Encontrados -> ShopID: {shop_id} | ItemID: {item_id}", flush=True)
-        
-        # TENTATIVA 1: API V4 GET ITEM COM IMPERSONATE CHROME
+
+    # 2. TENTATIVA PRINCIPAL: API OFICIAL DE AFILIADOS SHOPEE (GraphQL)
+    if SHOPEE_APP_ID and SHOPEE_SECRET:
+        try:
+            timestamp = int(time.time())
+            query = """
+            query GetProductInfo($url: String!) {
+                productOfferV2(productUrl: $url) {
+                    nodes {
+                        productName
+                        imageUrl
+                        price
+                        offerLink
+                    }
+                }
+            }
+            """
+            payload = json.dumps({"query": query, "variables": {"url": final_url}})
+            signature = generate_shopee_signature(SHOPEE_APP_ID, SHOPEE_SECRET, payload, timestamp)
+            
+            headers = {
+                "Content-Type": "application/json",
+                "Authorization": f"SHA256 Credential={SHOPEE_APP_ID}, Timestamp={timestamp}, Signature={signature}"
+            }
+            
+            api_resp = curl_requests.post("https://open-api.affiliate.shopee.com.br/graphql", data=payload, headers=headers, timeout=10)
+            
+            if api_resp.status_code == 200:
+                res_data = api_resp.json()
+                nodes = res_data.get("data", {}).get("productOfferV2", {}).get("nodes", [])
+                if nodes:
+                    prod = nodes[0]
+                    price_val = float(prod.get("price", 0))
+                    price_str = f"R$ {price_val:.2f}".replace('.', ',') if price_val > 0 else "Confira no site"
+                    print(f"✅ Sucesso via API Oficial de Afiliados: {prod.get('productName')[:30]}...", flush=True)
+                    return {
+                        "title": prod.get("productName"),
+                        "image": prod.get("imageUrl"),
+                        "price": price_str,
+                        "link": prod.get("offerLink") or final_url
+                    }
+        except Exception as e:
+            print(f"⚠️ Erro na API Oficial de Afiliados: {e}", flush=True)
+
+    # 3. FALLBACK 1: API PÚBLICA PDP (V4)
+    if shop_id and item_id:
         try:
             api_url = f"https://shopee.com.br/api/v4/item/get?itemid={item_id}&shopid={shop_id}"
             headers = {
@@ -124,7 +175,7 @@ def get_shopee_product_info(product_url):
 
                 if title and image_id:
                     image_url = f"https://down-br.img.susercontent.com/file/{image_id}"
-                    print(f"✅ Sucesso via API Shopee V4: {title[:30]}...", flush=True)
+                    print(f"✅ Sucesso via API Pública V4: {title[:30]}...", flush=True)
                     return {
                         "title": title,
                         "image": image_url,
@@ -134,9 +185,9 @@ def get_shopee_product_info(product_url):
         except Exception as e:
             print(f"⚠️ Erro na API V4: {e}", flush=True)
 
-    # 2. FALLBACK VIA HTML METATAGS
+    # 4. FALLBACK 2: METATAGS HTML
     try:
-        clean_url = f"https://shopee.com.br/product/{match.group(1)}/{match.group(2)}" if match else final_url
+        clean_url = f"https://shopee.com.br/product/{shop_id}/{item_id}" if shop_id and item_id else final_url
         resp = curl_requests.get(clean_url, impersonate="chrome120", timeout=10)
         soup = BeautifulSoup(resp.text, "html.parser")
         
