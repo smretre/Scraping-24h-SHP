@@ -99,7 +99,7 @@ def resolve_shopee_url(url):
         return url
 
 def get_shopee_product_info(product_url):
-    """Extrai informações do produto da Shopee via API pública de item ou Scraping"""
+    """Extrai informações do produto tratando todos os formatos de URL da Shopee"""
     final_url = resolve_shopee_url(product_url)
 
     session = requests.Session()
@@ -109,14 +109,19 @@ def get_shopee_product_info(product_url):
         "x-api-source": "pc"
     }
 
-    # 1. TENTATIVA VIA API PÚBLICA DE ITEM DA SHOPEE
-    try:
-        match = re.search(r'i\.(\d+)\.(\d+)', final_url) or re.search(r'product/(\d+)/(\d+)', final_url) or re.search(r'-i\.(\d+)\.(\d+)', final_url)
+    # 1. TENTATIVA VIA API PÚBLICA DE ITEM (Regex atualizada para o formato /loja/shopid/itemid)
+    match = (
+        re.search(r'shopee\.com\.br/[^/]+/(\d+)/(\d+)', final_url) or 
+        re.search(r'i\.(\d+)\.(\d+)', final_url) or 
+        re.search(r'product/(\d+)/(\d+)', final_url) or 
+        re.search(r'-i\.(\d+)\.(\d+)', final_url)
+    )
+    
+    if match:
+        shop_id, item_id = match.group(1), match.group(2)
+        print(f"🎯 IDs Encontrados -> ShopID: {shop_id} | ItemID: {item_id}", flush=True)
         
-        if match:
-            shop_id, item_id = match.group(1), match.group(2)
-            print(f"🎯 IDs Encontrados -> ShopID: {shop_id} | ItemID: {item_id}", flush=True)
-            
+        try:
             api_url = f"https://shopee.com.br/api/v4/item/get?itemid={item_id}&shopid={shop_id}"
             api_resp = session.get(api_url, headers=headers, timeout=10)
             
@@ -137,10 +142,10 @@ def get_shopee_product_info(product_url):
                         "price": price,
                         "link": final_url
                     }
-    except Exception as e:
-        print(f"⚠️ Falha na consulta da API Shopee: {e}", flush=True)
+        except Exception as e:
+            print(f"⚠️ Falha na consulta da API Shopee: {e}", flush=True)
 
-    # 2. TENTATIVA SECUNDÁRIA VIA METADADOS HTML (FALLBACK)
+    # 2. TENTATIVA SECUNDÁRIA VIA METADADOS HTML
     try:
         resp = session.get(final_url, headers=headers, timeout=10)
         soup = BeautifulSoup(resp.text, "html.parser")
