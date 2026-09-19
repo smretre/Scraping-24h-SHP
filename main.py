@@ -1,11 +1,13 @@
 import os
+import re
 import sqlite3
 import threading
 import time
 import hashlib
 import requests
 import json
-from flask import Flask, request
+from bs4 import BeautifulSoup
+from flask import Flask, request, jsonify
 import mercadopago
 from PIL import Image, ImageDraw, ImageFont
 from io import BytesIO
@@ -26,7 +28,7 @@ sdk = mercadopago.SDK(MP_ACCESS_TOKEN) if MP_ACCESS_TOKEN else None
 # Configuração do Banco de Dados SQLite
 DB_FILE = "bot_database.db"
 
-# --- SERVIDOR WEB (WEBHOOK) ---
+# --- SERVIDOR WEB (WEBHOOK MERCADO PAGO) ---
 app_web = Flask(__name__)
 
 @app_web.route("/", methods=["GET"])
@@ -36,9 +38,21 @@ def home():
 @app_web.route("/webhook", methods=["POST"])
 def webhook():
     data = request.get_json()
-    print(f"Webhook recebido: {data}")
+    if data and data.get("type") == "payment":
+        payment_id = data.get("data", {}).get("id")
+        if payment_id and sdk:
+            payment_info = sdk.payment().get(payment_id).get("response", {})
+            if payment_info.get("status") == "approved":
+                telegram_id = int(payment_info.get("external_reference"))
+                activate_subscription(telegram_id)
+                print(f"✅ Assinatura ativada para o usuário Telegram ID: {telegram_id}")
     return jsonify({"status": "ok"}), 200
 
+def run_flask():
+    port = int(os.environ.get("PORT", 5000))
+    app_web.run(host="0.0.0.0", port=port)
+
+# --- BANCO DE DADOS ---
 def init_db():
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
@@ -66,10 +80,11 @@ def activate_subscription(telegram_id):
 def resolve_shopee_url(url):
     """Resolve URLs encurtadas da Shopee (s.shopee.com.br / shope.ee)"""
     try:
-        headers = {
+        session = requests.Session()
+        session.headers.update({
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-        }
-        resp = requests.get(url, headers=headers, allow_redirects=True, timeout=10)
+        })
+        resp = session.get(url, allow_redirects=True, timeout=10)
         return resp.url
     except Exception as e:
         print(f"Erro ao expandir URL: {e}")
@@ -80,32 +95,37 @@ def get_shopee_product_info(product_url):
     final_url = resolve_shopee_url(product_url)
     print(f"🔗 URL Processada: {final_url}")
 
-    # 1. TENTATIVA VIA API PÚBLICA DE ITEM DA SHOPEE (Bypassa o bloqueio HTML)
+    session = requests.Session()
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "Referer": "https://shopee.com.br/"
+    }
+
+    # 1. TENTATIVA VIA API PÚBLICA DE ITEM DA SHOPEE
     try:
-        # Extrai itemid e shopid do formato da URL (...i.SHOPID.ITEMID ou .../product/SHOPID/ITEMID)
         match = re.search(r'i\.(\d+)\.(\d+)', final_url) or re.search(r'product/(\d+)/(\d+)', final_url)
         
         if match:
             shop_id, item_id = match.group(1), match.group(2)
             api_url = f"https://shopee.com.br/api/v4/item/get?itemid={item_id}&shopid={shop_id}"
             
-            headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-                "Referer": final_url
-            }
-            
-            api_resp = requests.get(api_url, headers=headers, timeout=10)
+            api_resp = session.get(api_url, headers=headers, timeout=10)
             if api_resp.status_code == 200:
                 data = api_resp.json().get("data", {})
                 title = data.get("name")
                 image_id = data.get("image")
                 
+                # Extrai o preço (Preço na API Shopee vem multiplicado por 100000)
+                price_raw = data.get("price") or data.get("price_min")
+                price = f"R$ {price_raw / 100000:.2f}".replace('.', ',') if price_raw else "Confira no site"
+
                 if title and image_id:
                     image_url = f"https://down-br.img.susercontent.com/file/{image_id}"
                     print(f"✅ Sucesso via API Interna da Shopee: {title[:20]}...")
                     return {
                         "title": title,
                         "image": image_url,
+                        "price": price,
                         "link": final_url
                     }
     except Exception as e:
@@ -113,10 +133,7 @@ def get_shopee_product_info(product_url):
 
     # 2. TENTATIVA SECUNDÁRIA VIA METADADOS HTML (FALLBACK)
     try:
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-        }
-        resp = requests.get(final_url, headers=headers, timeout=10)
+        resp = session.get(final_url, headers=headers, timeout=10)
         soup = BeautifulSoup(resp.text, "html.parser")
         
         og_title = soup.find("meta", property="og:title")
@@ -127,6 +144,7 @@ def get_shopee_product_info(product_url):
             return {
                 "title": og_title["content"],
                 "image": og_image["content"],
+                "price": "Confira no site",
                 "link": final_url
             }
     except Exception as e:
@@ -185,29 +203,9 @@ def generate_pix_payment(telegram_id):
     payment = result.get("response", {})
     return payment.get("point_of_interaction", {}).get("transaction_data", {}).get("qr_code")
 
-# --- SERVIDOR WEB (WEBHOOK) ---
-app_web = Flask(__name__)
-
-@app_web.route("/webhook", methods=["POST"])
-def webhook():
-    data = request.json
-    if data and data.get("type") == "payment":
-        payment_id = data.get("data", {}).get("id")
-        if payment_id and sdk:
-            payment_info = sdk.payment().get(payment_id).get("response", {})
-            if payment_info.get("status") == "approved":
-                telegram_id = int(payment_info.get("external_reference"))
-                activate_subscription(telegram_id)
-                print(f"✅ Assinatura ativada para o usuário Telegram ID: {telegram_id}")
-    return "OK", 200
-
-def run_flask():
-    port = int(os.environ.get("PORT", 5000))
-    app_web.run(host="0.0.0.0", port=port)
-
 # --- BOT TELEGRAM ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("👋 Envie o link de um produto da Shopee para criar o seu card promocional!")
+    await update.message.reply_text("✔️ Envie o link de um produto da Shopee para criar o seu card promocional!")
 
 async def process_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -248,12 +246,13 @@ async def process_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             remaining_str = "Assinante (Acesso Ilimitado)."
 
-        card_img = generate_card_image(product_info["image_url"], product_info["price"])
+        # Ajuste das chaves corretas no dicionário
+        card_img = generate_card_image(product_info["image"], product_info["price"])
 
         caption = (
-            f"🔥 **{product_info['title']}**\n\n"
-            f"💥 **Por: {product_info['price']}**\n\n"
-            f"🛒 **Link de Compra:** {product_info['affiliate_link']}\n\n"
+            f"🔥 *{product_info['title']}*\n\n"
+            f"💥 *Por: {product_info['price']}*\n\n"
+            f"🛒 *Link de Compra:* {product_info['link']}\n\n"
             f"⚡ _{remaining_str}_"
         )
 
@@ -263,19 +262,24 @@ async def process_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pix_code = generate_pix_payment(user_id)
         if pix_code:
             text_pix = (
-                "🛑 **Os seus 3 testes gratuitos acabaram!**\n\n"
+                "🛑 *Os seus 3 testes gratuitos acabaram!*\n\n"
                 "Para continuar a gerar cards ilimitados da Shopee, assine o plano mensal:\n\n"
                 f"`{pix_code}`\n\n"
-                "⚡ *Copie o código PIX acima e pague na app do seu banco. A libertação ocorre automaticamente em segundos!*"
+                "⚡ *Copie o código PIX acima e pague na app do seu banco. A liberação ocorre automaticamente em segundos!*"
             )
             await update.message.reply_text(text_pix, parse_mode="Markdown")
         else:
             await update.message.reply_text("Erro ao gerar o PIX. Tente novamente mais tarde.")
 
 def main():
+    # Inicia o servidor Flask em paralelo (para os webhooks do Mercado Pago)
+    threading.Thread(target=run_flask, daemon=True).start()
+
     telegram_app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     telegram_app.add_handler(CommandHandler("start", start))
     telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, process_link))
+    
+    print("🤖 Bot iniciado com sucesso!")
     telegram_app.run_polling()
 
 if __name__ == "__main__":
