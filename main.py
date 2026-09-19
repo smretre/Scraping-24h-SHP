@@ -99,17 +99,10 @@ def resolve_shopee_url(url):
         return url
 
 def get_shopee_product_info(product_url):
-    """Extrai informações do produto tratando todos os formatos de URL da Shopee"""
+    """Extrai informações do produto tratando todos os formatos de URL e chamadas da Shopee"""
     final_url = resolve_shopee_url(product_url)
 
-    session = requests.Session()
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-        "Referer": "https://shopee.com.br/",
-        "x-api-source": "pc"
-    }
-
-    # 1. TENTATIVA VIA API PÚBLICA DE ITEM (Regex atualizada para o formato /loja/shopid/itemid)
+    # 1. TENTATIVA VIA API PÚBLICA DE ITEM
     match = (
         re.search(r'shopee\.com\.br/[^/]+/(\d+)/(\d+)', final_url) or 
         re.search(r'i\.(\d+)\.(\d+)', final_url) or 
@@ -123,10 +116,19 @@ def get_shopee_product_info(product_url):
         
         try:
             api_url = f"https://shopee.com.br/api/v4/item/get?itemid={item_id}&shopid={shop_id}"
-            api_resp = session.get(api_url, headers=headers, timeout=10)
+            
+            # Usar requisição simples sem cookies de sessão para a API
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+                "Referer": final_url,
+                "x-api-source": "pc",
+                "x-shopee-language": "pt-BR"
+            }
+            
+            api_resp = requests.get(api_url, headers=headers, timeout=10)
             
             if api_resp.status_code == 200:
-                data = api_resp.json().get("data", {})
+                data = api_resp.json().get("data") or {}
                 title = data.get("name")
                 image_id = data.get("image")
                 
@@ -145,18 +147,22 @@ def get_shopee_product_info(product_url):
         except Exception as e:
             print(f"⚠️ Falha na consulta da API Shopee: {e}", flush=True)
 
-    # 2. TENTATIVA SECUNDÁRIA VIA METADADOS HTML
+    # 2. TENTATIVA SECUNDÁRIA VIA METADADOS HTML (FALLBACK)
     try:
-        resp = session.get(final_url, headers=headers, timeout=10)
+        headers_html = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+        }
+        resp = requests.get(final_url, headers=headers_html, timeout=10)
         soup = BeautifulSoup(resp.text, "html.parser")
         
         og_title = soup.find("meta", property="og:title") or soup.find("meta", attrs={"name": "twitter:title"})
         og_image = soup.find("meta", property="og:image") or soup.find("meta", attrs={"name": "twitter:image"})
         
         if og_title and og_image:
-            print("✅ Sucesso via HTML Metatags", flush=True)
+            title_text = og_title["content"].split(" | ")[0]  # Remove sufixos como "| Shopee Brasil"
+            print(f"✅ Sucesso via HTML Metatags: {title_text[:30]}...", flush=True)
             return {
-                "title": og_title["content"],
+                "title": title_text,
                 "image": og_image["content"],
                 "price": "Confira no site",
                 "link": final_url
