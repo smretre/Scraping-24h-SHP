@@ -62,78 +62,75 @@ def activate_subscription(telegram_id):
     conn.close()
 
 # --- INTEGRAÇÃO COM A API DA SHOPEE ---
+
 def resolve_shopee_url(url):
-    """Redireciona links encurtados (ex: s.shopee.com.br) e retorna a URL longa completa."""
+    """Resolve URLs encurtadas da Shopee (s.shopee.com.br / shope.ee)"""
     try:
         headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
         }
-        response = requests.get(url, headers=headers, allow_redirects=True, timeout=10)
-        return response.url
+        resp = requests.get(url, headers=headers, allow_redirects=True, timeout=10)
+        return resp.url
     except Exception as e:
         print(f"Erro ao expandir URL: {e}")
         return url
 
 def get_shopee_product_info(product_url):
-    """Obtém dados da Shopee com fallback para scraping via BeautifulSoup"""
+    """Extrai informações do produto da Shopee via API pública de item ou Scraping"""
     final_url = resolve_shopee_url(product_url)
-    print(f"🔗 Processando link final: {final_url}")
-    
-    # 1. TENTATIVA VIA API GRAPHQL DA SHOPEE
-    if SHOPEE_APP_ID and SHOPEE_SECRET:
-        try:
-            timestamp = int(time.time())
-            payload = json.dumps({"query": f'query {{ product(url: "{final_url}") {{ title image price affiliateLink }} }}'})
-            base_string = f"{SHOPEE_APP_ID}{timestamp}{payload}{SHOPEE_SECRET}"
-            sign = hashlib.sha256(base_string.encode('utf-8')).hexdigest()
+    print(f"🔗 URL Processada: {final_url}")
 
+    # 1. TENTATIVA VIA API PÚBLICA DE ITEM DA SHOPEE (Bypassa o bloqueio HTML)
+    try:
+        # Extrai itemid e shopid do formato da URL (...i.SHOPID.ITEMID ou .../product/SHOPID/ITEMID)
+        match = re.search(r'i\.(\d+)\.(\d+)', final_url) or re.search(r'product/(\d+)/(\d+)', final_url)
+        
+        if match:
+            shop_id, item_id = match.group(1), match.group(2)
+            api_url = f"https://shopee.com.br/api/v4/item/get?itemid={item_id}&shopid={shop_id}"
+            
             headers = {
-                'Content-Type': 'application/json',
-                'Authorization': f'SHA256 Credential={SHOPEE_APP_ID}, Timestamp={timestamp}, Signature={sign}'
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+                "Referer": final_url
             }
             
-            response = requests.post("https://open-api.affiliate.shopee.com.br/graphql", data=payload, headers=headers, timeout=8)
-            res_json = response.json()
-            
-            product = res_json.get("data", {}).get("product")
-            if product and product.get("image"):
-                print("✅ Sucesso via API Oficial da Shopee")
-                return {
-                    "title": product.get("title", "Produto Shopee"),
-                    "image": product.get("image"),
-                    "link": product.get("affiliateLink", final_url)
-                }
-        except Exception as e:
-            print(f"⚠️ Falha na API Shopee: {e}")
+            api_resp = requests.get(api_url, headers=headers, timeout=10)
+            if api_resp.status_code == 200:
+                data = api_resp.json().get("data", {})
+                title = data.get("name")
+                image_id = data.get("image")
+                
+                if title and image_id:
+                    image_url = f"https://down-br.img.susercontent.com/file/{image_id}"
+                    print(f"✅ Sucesso via API Interna da Shopee: {title[:20]}...")
+                    return {
+                        "title": title,
+                        "image": image_url,
+                        "link": final_url
+                    }
+    except Exception as e:
+        print(f"⚠️ Falha na consulta de Item API: {e}")
 
-    # 2. FALLBACK VIA SCRAPING (Se a API falhar ou não retornar dados)
+    # 2. TENTATIVA SECUNDÁRIA VIA METADADOS HTML (FALLBACK)
     try:
-        print("🔍 Executando Fallback via Web Scraping...")
         headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Accept-Language": "pt-BR,pt;q=0.9"
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
         }
         resp = requests.get(final_url, headers=headers, timeout=10)
-        
-        from bs4 import BeautifulSoup
         soup = BeautifulSoup(resp.text, "html.parser")
         
-        # Busca pelas meta tags OpenGraph
         og_title = soup.find("meta", property="og:title")
         og_image = soup.find("meta", property="og:image")
         
-        title_text = og_title["content"] if og_title else "Produto Shopee"
-        image_url = og_image["content"] if og_image else None
-        
-        if image_url:
-            print("✅ Sucesso via Fallback (Scraping)")
+        if og_title and og_image:
+            print("✅ Sucesso via HTML Metatags")
             return {
-                "title": title_text,
-                "image": image_url,
+                "title": og_title["content"],
+                "image": og_image["content"],
                 "link": final_url
             }
     except Exception as e:
-        print(f"❌ Erro no fallback: {e}")
+        print(f"❌ Erro no fallback HTML: {e}")
 
     return None
 
