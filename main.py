@@ -35,7 +35,9 @@ def home():
 
 @app_web.route("/webhook", methods=["POST"])
 def webhook():
-    # ... código existente do webhook
+    data = request.get_json()
+    print(f"Webhook recebido: {data}")
+    return jsonify({"status": "ok"}), 200
 
 def init_db():
     conn = sqlite3.connect(DB_FILE)
