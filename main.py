@@ -166,7 +166,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def process_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
-    if "shopee" not in text.lower():
+    if not text or "shopee" not in text.lower():
         await update.message.reply_text("Por favor, envie um link válido da Shopee.")
         return ConversationHandler.END
 
@@ -205,6 +205,7 @@ async def process_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def receive_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
     image_source = None
     if update.message.photo:
+        # Pega a foto de maior resolução
         photo_file = await update.message.photo[-1].get_file()
         image_source = await photo_file.download_as_bytearray()
     elif update.message.text and update.message.text.startswith("http"):
@@ -215,8 +216,9 @@ async def receive_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ASK_IMAGE
 
     context.user_data["image_source"] = image_source
+    print("✅ Imagem recebida e guardada no user_data.")
 
-    # Se o título também estiver em falta, pede explicitamente o título e avança o estado para ASK_TITLE
+    # Verifica se o título já existe
     if not context.user_data.get("title"):
         await update.message.reply_text(
             "✅ Imagem guardada com sucesso!\n\n"
@@ -224,7 +226,6 @@ async def receive_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
         , parse_mode="Markdown")
         return ASK_TITLE
 
-    # Se o título já existia, pede o canal de destino diretamente
     await update.message.reply_text(
         "✅ Imagem guardada com sucesso!\n\n"
         "📢 **Passo 3/3:** Envie o **ID ou Username do canal/grupo** de destino:",
@@ -235,10 +236,11 @@ async def receive_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def receive_title(update: Update, context: ContextTypes.DEFAULT_TYPE):
     title = update.message.text
     if not title:
-        await update.message.reply_text("⚠️ Por favor, envie um título válido:")
+        await update.message.reply_text("⚠️ Por favor, envie um título válido em texto:")
         return ASK_TITLE
 
     context.user_data["title"] = title
+    print(f"✅ Título recebido: {title}")
 
     await update.message.reply_text(
         "✅ Título guardado com sucesso!\n\n"
@@ -295,7 +297,8 @@ async def setup_telegram_app():
         entry_points=[MessageHandler(filters.TEXT & ~filters.COMMAND, process_link)],
         states={
             ASK_IMAGE: [
-                MessageHandler(filters.PHOTO | (filters.TEXT & ~filters.COMMAND), receive_image)
+                MessageHandler(filters.PHOTO, receive_image),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, receive_image)
             ],
             ASK_TITLE: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, receive_title)
@@ -342,7 +345,7 @@ def mercado_pago_webhook():
             if payment_info.get("status") == "approved":
                 telegram_id = int(payment_info.get("external_reference"))
                 print(f"✅ Pagamento aprovado para o ID: {telegram_id}")
-    return jsonify({"status": "ok"}}, 200
+    return jsonify({"status": "ok"}), 200
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
