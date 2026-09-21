@@ -211,22 +211,22 @@ async def receive_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
         image_source = update.message.text
 
     if not image_source:
-        await update.message.reply_text("⚠️ Por favor, envie uma foto válida ou um link de imagem:")
+        await update.message.reply_text("⚠️ Por favor, envie uma foto válida (JPG/PNG) ou um link de imagem:")
         return ASK_IMAGE
 
     context.user_data["image_source"] = image_source
 
-    # Se o título também estiver em falta, pede no passo seguinte
+    # Se o título também estiver em falta, pede explicitamente o título e avança o estado para ASK_TITLE
     if not context.user_data.get("title"):
         await update.message.reply_text(
-            "✅ Imagem guardada!\n\n"
+            "✅ Imagem guardada com sucesso!\n\n"
             "📝 **Passo 2/3:** Agora digite e envie o **título do produto**:"
         , parse_mode="Markdown")
         return ASK_TITLE
 
-    # Se o título já existia, pede o canal de destino
+    # Se o título já existia, pede o canal de destino diretamente
     await update.message.reply_text(
-        "✅ Imagem guardada!\n\n"
+        "✅ Imagem guardada com sucesso!\n\n"
         "📢 **Passo 3/3:** Envie o **ID ou Username do canal/grupo** de destino:",
         parse_mode="Markdown"
     )
@@ -241,7 +241,7 @@ async def receive_title(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["title"] = title
 
     await update.message.reply_text(
-        "✅ Título guardado!\n\n"
+        "✅ Título guardado com sucesso!\n\n"
         "📢 **Passo 3/3:** Envie o **ID ou Username do canal/grupo** de destino (ex: `@seu_canal` ou `-100123456789`):",
         parse_mode="Markdown"
     )
@@ -295,7 +295,7 @@ async def setup_telegram_app():
         entry_points=[MessageHandler(filters.TEXT & ~filters.COMMAND, process_link)],
         states={
             ASK_IMAGE: [
-                MessageHandler(filters.PHOTO | filters.TEXT & ~filters.COMMAND, receive_image)
+                MessageHandler(filters.PHOTO | (filters.TEXT & ~filters.COMMAND), receive_image)
             ],
             ASK_TITLE: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, receive_title)
@@ -342,7 +342,7 @@ def mercado_pago_webhook():
             if payment_info.get("status") == "approved":
                 telegram_id = int(payment_info.get("external_reference"))
                 print(f"✅ Pagamento aprovado para o ID: {telegram_id}")
-    return jsonify({"status": "ok"}), 200
+    return jsonify({"status": "ok"}}, 200
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
