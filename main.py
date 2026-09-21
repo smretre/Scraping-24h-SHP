@@ -30,13 +30,19 @@ def generate_shopee_signature(app_id, secret, payload, timestamp):
 
 def resolve_shopee_url(url):
     try:
-        resp = curl_requests.get(url, impersonate="chrome120", allow_redirects=True, timeout=5)
-        return resp.url
+        # Usa headers idênticos a um browser real para evitar bloqueios no redirecionamento
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7"
+        }
+        resp = curl_requests.get(url, headers=headers, impersonate="chrome120", allow_redirects=True, timeout=8)
+        return resp.url, resp.text
     except Exception as e:
-        return url
+        print(f"⚠️ Erro ao resolver URL: {e}")
+        return url, ""
 
 def get_shopee_product_info(product_url):
-    final_url = resolve_shopee_url(product_url)
+    final_url, html_text = resolve_shopee_url(product_url)
     short_link = None
     title = None
     image_url = None
@@ -58,63 +64,38 @@ def get_shopee_product_info(product_url):
             resp_link = curl_requests.post("https://open-api.affiliate.shopee.com.br/graphql", data=payload_link, headers=headers, timeout=8)
             if resp_link.status_code == 200:
                 short_link = resp_link.json().get("data", {}).get("generateShortLink", {}).get("shortLink")
-
-            # Tenta apanhar dados via OfferV2
-            slug_match = re.search(r'shopee\.com\.br/([^/?#]+)', final_url)
-            if slug_match:
-                raw_slug = slug_match.group(1)
-                keyword = re.sub(r'-i\.\d+\.\d+$', '', raw_slug).replace('-', ' ')
-                if len(keyword) > 3:
-                    query_prod = "query { productOfferV2(keyword: \"" + keyword + "\", limit: 1) { nodes { productName imageUrl price } } }"
-                    payload_prod = json.dumps({"query": query_prod, "variables": None, "operationName": None})
-                    sig_prod = generate_shopee_signature(SHOPEE_APP_ID, SHOPEE_SECRET, payload_prod, timestamp)
-                    
-                    headers_prod = {
-                        "Content-Type": "application/json",
-                        "Authorization": f"SHA256 Credential={SHOPEE_APP_ID}, Timestamp={timestamp}, Signature={sig_prod}"
-                    }
-                    
-                    resp_prod = curl_requests.post("https://open-api.affiliate.shopee.com.br/graphql", data=payload_prod, headers=headers_prod, timeout=8)
-                    if resp_prod.status_code == 200:
-                        nodes = resp_prod.json().get("data", {}).get("productOfferV2", {}).get("nodes", [])
-                        if nodes:
-                            node = nodes[0]
-                            title = node.get("productName")
-                            image_url = node.get("imageUrl")
-                            p_val = node.get("price")
-                            if p_val:
-                                price_str = f"R$ {float(p_val):.2f}".replace('.', ',')
         except Exception as e:
-            print(f"⚠️ Erro na API Shopee: {e}")
+            print(f"⚠️ Erro ao gerar link curto: {e}")
 
-    # 2. Se a API não trouxe imagem ou título, faz scraping inteligente direto da página
+    # 2. Extração limpa via BeautifulSoup e Regex diretamente do HTML da página resolvida
     try:
-        resp_page = curl_requests.get(final_url, impersonate="chrome120", timeout=8)
-        if resp_page.status_code == 200:
-            html_text = resp_page.text
+        if html_text:
             soup = BeautifulSoup(html_text, 'html.parser')
             
-            # Título OpenGraph ou tag title
-            if not title:
-                og_title = soup.find("meta", property="og:title")
-                if og_title and og_title.get("content"):
-                    title = og_title["content"]
-                elif soup.title:
-                    title = soup.title.string
+            # Título
+            og_title = soup.find("meta", property="og:title")
+            if og_title and og_title.get("content"):
+                title = og_title["content"]
+            elif soup.title:
+                title = soup.title.string
 
             # Imagem OpenGraph
-            if not image_url:
-                og_image = soup.find("meta", property="og:image")
-                if og_image and og_image.get("content"):
-                    image_url = og_image["content"]
+            og_image = soup.find("meta", property="og:image")
+            if og_image and og_image.get("content"):
+                image_url = og_image["content"]
 
-            # Fallback extra: caça URLs de imagens da Susercontent no código bruto se ainda estiver vazio
+            # Fallback por Regex para imagens susercontent caso o og:image falhe
             if not image_url:
                 img_matches = re.findall(r'https?://[^\"\'\s]+\.susercontent\.com/file/[a-z0-9]+', html_text)
                 if img_matches:
                     image_url = img_matches[0]
+                    
+            # Tenta extrair o preço visível no HTML se houver padrão de preço em R$
+            price_match = re.search(r'R\$\s*([\d\.]+,\d{2})', html_text)
+            if price_match:
+                price_str = f"R$ {price_match.group(1)}"
     except Exception as e:
-        print(f"⚠️ Erro no scraping da página: {e}")
+        print(f"⚠️ Erro no parsing dos dados da página: {e}")
 
     return {
         "title": title or "🔥 Super Achadinho Shopee",
@@ -163,7 +144,7 @@ async def setup_telegram_app():
     application = Application.builder().token(TELEGRAM_TOKEN).build()
     
     async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        await update.message.reply_text("🚀 Envie o link de um produto da Shopee para criar o seu card promocional!")
+        await update.message.reply_text("✔️ Envie o link de um produto da Shopee para criar o seu card promocional!")
 
     async def process_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = update.message.text
