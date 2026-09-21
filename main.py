@@ -3,6 +3,7 @@ import re
 import time
 import hashlib
 import json
+from bs4 import BeautifulSoup
 from flask import Flask, request, jsonify
 import mercadopago
 from PIL import Image, ImageDraw
@@ -41,11 +42,10 @@ def get_shopee_product_info(product_url):
     image_url = None
     price_str = None
 
+    # 1. Tenta obter o link de afiliado oficial via API GraphQL
     if SHOPEE_APP_ID and SHOPEE_SECRET:
         try:
             timestamp = int(time.time())
-            
-            # 1. Gerar Link de Afiliado Curto
             mutation = 'mutation GenerateLink($originUrl: String!) { generateShortLink(input: { originUrl: $originUrl }) { shortLink } }'
             payload_link = json.dumps({"query": mutation, "variables": {"originUrl": final_url}})
             sig_link = generate_shopee_signature(SHOPEE_APP_ID, SHOPEE_SECRET, payload_link, timestamp)
@@ -59,7 +59,7 @@ def get_shopee_product_info(product_url):
             if resp_link.status_code == 200:
                 short_link = resp_link.json().get("data", {}).get("generateShortLink", {}).get("shortLink")
 
-            # 2. Obter Detalhes do Produto (Título, Imagem e Preço) via API GraphQL
+            # Tenta apanhar dados via OfferV2
             slug_match = re.search(r'shopee\.com\.br/([^/?#]+)', final_url)
             if slug_match:
                 raw_slug = slug_match.group(1)
@@ -86,6 +86,35 @@ def get_shopee_product_info(product_url):
                                 price_str = f"R$ {float(p_val):.2f}".replace('.', ',')
         except Exception as e:
             print(f"⚠️ Erro na API Shopee: {e}")
+
+    # 2. Se a API não trouxe imagem ou título, faz scraping inteligente direto da página
+    try:
+        resp_page = curl_requests.get(final_url, impersonate="chrome120", timeout=8)
+        if resp_page.status_code == 200:
+            html_text = resp_page.text
+            soup = BeautifulSoup(html_text, 'html.parser')
+            
+            # Título OpenGraph ou tag title
+            if not title:
+                og_title = soup.find("meta", property="og:title")
+                if og_title and og_title.get("content"):
+                    title = og_title["content"]
+                elif soup.title:
+                    title = soup.title.string
+
+            # Imagem OpenGraph
+            if not image_url:
+                og_image = soup.find("meta", property="og:image")
+                if og_image and og_image.get("content"):
+                    image_url = og_image["content"]
+
+            # Fallback extra: caça URLs de imagens da Susercontent no código bruto se ainda estiver vazio
+            if not image_url:
+                img_matches = re.findall(r'https?://[^\"\'\s]+\.susercontent\.com/file/[a-z0-9]+', html_text)
+                if img_matches:
+                    image_url = img_matches[0]
+    except Exception as e:
+        print(f"⚠️ Erro no scraping da página: {e}")
 
     return {
         "title": title or "🔥 Super Achadinho Shopee",
