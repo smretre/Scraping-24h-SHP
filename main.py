@@ -173,29 +173,27 @@ async def process_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🔍 A analisar o link...")
     product_info = get_shopee_product_info(text)
 
-    # Guarda no contexto
     context.user_data["link"] = product_info["link"]
     context.user_data["price"] = product_info["price"] or "Imperdível"
     context.user_data["title"] = product_info["title"]
     context.user_data["image_source"] = product_info["image"]
 
-    # PASSO 1: Se não encontrou a imagem, pede a imagem isoladamente
     if not product_info["image"]:
         await update.message.reply_text(
             "⚠️ Não foi possível detetar a imagem automaticamente.\n\n"
-            "📸 **Passo 1/3:** Envie a foto (JPG/PNG) ou o link da imagem do produto:"
-        , parse_mode="Markdown")
+            "📸 **Passo 1/3:** Envie a foto (JPG/PNG) do produto:",
+            parse_mode="Markdown"
+        )
         return ASK_IMAGE
 
-    # PASSO 2: Se encontrou a imagem mas não o título, pede o título isoladamente
     if not product_info["title"]:
         await update.message.reply_text(
             "⚠️ Não foi possível detetar o título automaticamente.\n\n"
-            "📝 **Passo 2/3:** Digite e envie o **título do produto**:"
-        , parse_mode="Markdown")
+            "📝 **Passo 2/3:** Digite e envie o **título do produto**:",
+            parse_mode="Markdown"
+        )
         return ASK_TITLE
 
-    # Se encontrou tudo, salta direto para o canal
     await update.message.reply_text(
         "📢 **Passo 3/3:** Envie o **ID ou Username do canal/grupo** de destino (ex: `@seu_canal` ou `-100123456789`):",
         parse_mode="Markdown"
@@ -203,35 +201,21 @@ async def process_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ASK_CHANNEL
 
 async def receive_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    image_source = None
-    if update.message.photo:
-        # Pega a foto de maior resolução
-        photo_file = await update.message.photo[-1].get_file()
-        image_source = await photo_file.download_as_bytearray()
-    elif update.message.text and update.message.text.startswith("http"):
-        image_source = update.message.text
-
-    if not image_source:
-        await update.message.reply_text("⚠️ Por favor, envie uma foto válida (JPG/PNG) ou um link de imagem:")
+    if not update.message.photo:
+        await update.message.reply_text("⚠️ Por favor, envie uma foto válida (em formato de imagem):")
         return ASK_IMAGE
 
-    context.user_data["image_source"] = image_source
-    print("✅ Imagem recebida e guardada no user_data.")
-
-    # Verifica se o título já existe
-    if not context.user_data.get("title"):
-        await update.message.reply_text(
-            "✅ Imagem guardada com sucesso!\n\n"
-            "📝 **Passo 2/3:** Agora digite e envie o **título do produto**:"
-        , parse_mode="Markdown")
-        return ASK_TITLE
+    photo_file = await update.message.photo[-1].get_file()
+    image_bytes = await photo_file.download_as_bytearray()
+    
+    context.user_data["image_source"] = image_bytes
 
     await update.message.reply_text(
         "✅ Imagem guardada com sucesso!\n\n"
-        "📢 **Passo 3/3:** Envie o **ID ou Username do canal/grupo** de destino:",
+        "📝 **Passo 2/3:** Agora digite e envie o **título do produto**:",
         parse_mode="Markdown"
     )
-    return ASK_CHANNEL
+    return ASK_TITLE
 
 async def receive_title(update: Update, context: ContextTypes.DEFAULT_TYPE):
     title = update.message.text
@@ -240,7 +224,6 @@ async def receive_title(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ASK_TITLE
 
     context.user_data["title"] = title
-    print(f"✅ Título recebido: {title}")
 
     await update.message.reply_text(
         "✅ Título guardado com sucesso!\n\n"
@@ -263,7 +246,6 @@ async def receive_channel_and_send(update: Update, context: ContextTypes.DEFAULT
         )
         return ASK_CHANNEL
 
-    # Dados finais
     title = context.user_data.get("title", "🔥 Super Achadinho Shopee")
     price = context.user_data.get("price", "Imperdível")
     link = context.user_data.get("link")
@@ -297,8 +279,7 @@ async def setup_telegram_app():
         entry_points=[MessageHandler(filters.TEXT & ~filters.COMMAND, process_link)],
         states={
             ASK_IMAGE: [
-                MessageHandler(filters.PHOTO, receive_image),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, receive_image)
+                MessageHandler(filters.PHOTO, receive_image)
             ],
             ASK_TITLE: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, receive_title)
