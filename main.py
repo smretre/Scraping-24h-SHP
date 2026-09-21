@@ -26,9 +26,10 @@ sdk = mercadopago.SDK(MP_ACCESS_TOKEN) if MP_ACCESS_TOKEN else None
 # Instância Flask de nível superior exigida pela Vercel
 app = Flask(__name__)
 
-# Estados da Conversa
-WAITING_FOR_DATA = 1
-WAITING_FOR_CHANNEL = 2
+# Estados da Conversa Passo a Passo
+ASK_IMAGE = 1
+ASK_TITLE = 2
+ASK_CHANNEL = 3
 
 # --- INTEGRAÇÃO COM A API DA SHOPEE ---
 def generate_shopee_signature(app_id, secret, payload, timestamp):
@@ -144,21 +145,21 @@ def generate_card_image(image_source, price_str):
     output_stream.seek(0)
     return output_stream
 
-# --- VERIFICAÇÃO SE O BOT É ADMINISTRADOR ---
+# --- VERIFICAÇÃO DE ADMINISTRADOR ---
 async def verify_bot_admin(bot, chat_id):
     try:
         bot_member = await bot.get_chat_member(chat_id=chat_id, user_id=bot.id)
         if bot_member.status in [ChatMember.ADMINISTRATOR, ChatMember.OWNER]:
             return True
     except Exception as e:
-        print(f"⚠️ Erro ao verificar privilégios de ADM no chat {chat_id}: {e}")
+        print(f"⚠️ Erro ao verificar ADM no chat {chat_id}: {e}")
     return False
 
-# --- FLUXO DO BOT TELEGRAM ---
+# --- FLUXO DO BOT ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "✔️ **Bem-vindo ao Bot de Afiliados Shopee!**\n\n"
-        "Envie o link de um produto da Shopee para criarmos a sua postagem promocional.",
+        "Envie o link de um produto da Shopee para começarmos.",
         parse_mode="Markdown"
     )
     return ConversationHandler.END
@@ -169,78 +170,98 @@ async def process_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Por favor, envie um link válido da Shopee.")
         return ConversationHandler.END
 
-    await update.message.reply_text("🔍 A analisar o link e a recolher os dados do produto...")
+    await update.message.reply_text("🔍 A analisar o link...")
     product_info = get_shopee_product_info(text)
 
-    # Guarda os dados no contexto
+    # Guarda no contexto
     context.user_data["link"] = product_info["link"]
     context.user_data["price"] = product_info["price"] or "Imperdível"
     context.user_data["title"] = product_info["title"]
     context.user_data["image_source"] = product_info["image"]
 
-    # Se faltar dados, pede ao utilizador
-    if not product_info["image"] or not product_info["title"]:
-        missing = []
-        if not product_info["image"]: missing.append("a imagem (envie a foto JPG/PNG ou o link da imagem)")
-        if not product_info["title"]: missing.append("o título do produto")
-        
-        msg = f"⚠️ Não foi possível obter automaticamente: **{' e '.join(missing)}**.\n\nPor favor, **envie agora a informação em falta**:"
-        await update.message.reply_text(msg, parse_mode="Markdown")
-        return WAITING_FOR_DATA
+    # PASSO 1: Se não encontrou a imagem, pede a imagem isoladamente
+    if not product_info["image"]:
+        await update.message.reply_text(
+            "⚠️ Não foi possível detetar a imagem automaticamente.\n\n"
+            "📸 **Passo 1/3:** Envie a foto (JPG/PNG) ou o link da imagem do produto:"
+        , parse_mode="Markdown")
+        return ASK_IMAGE
 
-    # Se recolheu tudo, passa para o pedido do canal
+    # PASSO 2: Se encontrou a imagem mas não o título, pede o título isoladamente
+    if not product_info["title"]:
+        await update.message.reply_text(
+            "⚠️ Não foi possível detetar o título automaticamente.\n\n"
+            "📝 **Passo 2/3:** Digite e envie o **título do produto**:"
+        , parse_mode="Markdown")
+        return ASK_TITLE
+
+    # Se encontrou tudo, salta direto para o canal
     await update.message.reply_text(
-        "📢 Para onde deseja enviar a postagem?\n\n"
-        "Envie o **ID ou Username do canal/grupo** (ex: `@seu_canal` ou `-100123456789`).\n"
-        "*(Nota: O bot precisa de ser Administrador lá!)*",
+        "📢 **Passo 3/3:** Envie o **ID ou Username do canal/grupo** de destino (ex: `@seu_canal` ou `-100123456789`):",
         parse_mode="Markdown"
     )
-    return WAITING_FOR_CHANNEL
+    return ASK_CHANNEL
 
-async def receive_missing_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def receive_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    image_source = None
     if update.message.photo:
         photo_file = await update.message.photo[-1].get_file()
-        context.user_data["image_source"] = await photo_file.download_as_bytearray()
-    elif update.message.text:
-        text = update.message.text
-        if text.startswith("http"):
-            context.user_data["image_source"] = text
-        else:
-            context.user_data["title"] = text
+        image_source = await photo_file.download_as_bytearray()
+    elif update.message.text and update.message.text.startswith("http"):
+        image_source = update.message.text
 
-    if not context.user_data.get("image_source"):
-        await update.message.reply_text("⚠️ Por favor, envie a imagem do produto (foto ou link) para prosseguir.")
-        return WAITING_FOR_DATA
-    
+    if not image_source:
+        await update.message.reply_text("⚠️ Por favor, envie uma foto válida ou um link de imagem:")
+        return ASK_IMAGE
+
+    context.user_data["image_source"] = image_source
+
+    # Se o título também estiver em falta, pede no passo seguinte
     if not context.user_data.get("title"):
-        await update.message.reply_text("📝 Quase lá! Agora envie o **título do produto**:")
-        return WAITING_FOR_DATA
+        await update.message.reply_text(
+            "✅ Imagem guardada!\n\n"
+            "📝 **Passo 2/3:** Agora digite e envie o **título do produto**:"
+        , parse_mode="Markdown")
+        return ASK_TITLE
 
-    # Se já tem imagem e título, pede o canal de destino
+    # Se o título já existia, pede o canal de destino
     await update.message.reply_text(
-        "📢 Dados recolhidos com sucesso!\n\n"
-        "Agora envie o **ID ou Username do canal/grupo** de destino (ex: `@seu_canal` ou `-100123456789`):",
+        "✅ Imagem guardada!\n\n"
+        "📢 **Passo 3/3:** Envie o **ID ou Username do canal/grupo** de destino:",
         parse_mode="Markdown"
     )
-    return WAITING_FOR_CHANNEL
+    return ASK_CHANNEL
+
+async def receive_title(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    title = update.message.text
+    if not title:
+        await update.message.reply_text("⚠️ Por favor, envie um título válido:")
+        return ASK_TITLE
+
+    context.user_data["title"] = title
+
+    await update.message.reply_text(
+        "✅ Título guardado!\n\n"
+        "📢 **Passo 3/3:** Envie o **ID ou Username do canal/grupo** de destino (ex: `@seu_canal` ou `-100123456789`):",
+        parse_mode="Markdown"
+    )
+    return ASK_CHANNEL
 
 async def receive_channel_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
     target_channel = update.message.text.strip()
-    context.user_data["target_channel"] = target_channel
-
-    # Valida se o bot é administrador do canal/grupo indicado
-    await update.message.reply_text("🔍 A verificar permissões de Administrador no canal indicado...")
+    
+    await update.message.reply_text("🔍 A verificar permissões de Administrador...")
     is_admin = await verify_bot_admin(context.bot, target_channel)
 
     if not is_admin:
         await update.message.reply_text(
-            f"❌ O bot **não é Administrador** no destino `{target_channel}` ou o ID/Username está incorreto.\n\n"
-            "Adicione o bot como Administrador do canal com permissão para publicar mensagens e envie o ID/Username novamente:",
+            f"❌ O bot **não é Administrador** no destino `{target_channel}`.\n\n"
+            "Certifique-se de que adicionou o bot como ADM e tente enviar o ID/Username novamente:",
             parse_mode="Markdown"
         )
-        return WAITING_FOR_CHANNEL
+        return ASK_CHANNEL
 
-    # Prepara os dados e gera o card
+    # Dados finais
     title = context.user_data.get("title", "🔥 Super Achadinho Shopee")
     price = context.user_data.get("price", "Imperdível")
     link = context.user_data.get("link")
@@ -255,9 +276,9 @@ async def receive_channel_and_send(update: Update, context: ContextTypes.DEFAULT
 
     try:
         await context.bot.send_photo(chat_id=target_channel, photo=card_img, caption=caption, parse_mode="Markdown")
-        await update.message.reply_text(f"✅ Postagem criada e enviada com sucesso para o canal `{target_channel}`!", parse_mode="Markdown")
+        await update.message.reply_text(f"✅ Postagem criada e enviada com sucesso para `{target_channel}`!", parse_mode="Markdown")
     except Exception as e:
-        await update.message.reply_text(f"❌ Erro ao enviar para o canal: {e}")
+        await update.message.reply_text(f"❌ Erro ao enviar postagem: {e}")
 
     context.user_data.clear()
     return ConversationHandler.END
@@ -273,10 +294,13 @@ async def setup_telegram_app():
     conv_handler = ConversationHandler(
         entry_points=[MessageHandler(filters.TEXT & ~filters.COMMAND, process_link)],
         states={
-            WAITING_FOR_DATA: [
-                MessageHandler(filters.PHOTO | filters.TEXT & ~filters.COMMAND, receive_missing_data)
+            ASK_IMAGE: [
+                MessageHandler(filters.PHOTO | filters.TEXT & ~filters.COMMAND, receive_image)
             ],
-            WAITING_FOR_CHANNEL: [
+            ASK_TITLE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, receive_title)
+            ],
+            ASK_CHANNEL: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, receive_channel_and_send)
             ],
         },
