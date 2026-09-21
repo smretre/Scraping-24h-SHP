@@ -3,6 +3,7 @@ import re
 import time
 import hashlib
 import json
+from bs4 import BeautifulSoup
 from flask import Flask, request, jsonify
 import mercadopago
 from PIL import Image, ImageDraw
@@ -41,6 +42,7 @@ def get_shopee_product_info(product_url):
     image_url = None
     price_str = None
 
+    # 1. Tenta obter o link de afiliado oficial via API GraphQL
     if SHOPEE_APP_ID and SHOPEE_SECRET:
         try:
             timestamp = int(time.time())
@@ -56,33 +58,24 @@ def get_shopee_product_info(product_url):
             resp_link = curl_requests.post("https://open-api.affiliate.shopee.com.br/graphql", data=payload_link, headers=headers, timeout=8)
             if resp_link.status_code == 200:
                 short_link = resp_link.json().get("data", {}).get("generateShortLink", {}).get("shortLink")
-
-            slug_match = re.search(r'shopee\.com\.br/([^/?#]+)', final_url)
-            if slug_match:
-                raw_slug = slug_match.group(1)
-                keyword = re.sub(r'-i\.\d+\.\d+$', '', raw_slug).replace('-', ' ')
-                if len(keyword) > 3:
-                    query_prod = "query { productOfferV2(keyword: \"" + keyword + "\", limit: 1) { nodes { productName imageUrl price } } }"
-                    payload_prod = json.dumps({"query": query_prod, "variables": None, "operationName": None})
-                    sig_prod = generate_shopee_signature(SHOPEE_APP_ID, SHOPEE_SECRET, payload_prod, timestamp)
-                    
-                    headers_prod = {
-                        "Content-Type": "application/json",
-                        "Authorization": f"SHA256 Credential={SHOPEE_APP_ID}, Timestamp={timestamp}, Signature={sig_prod}"
-                    }
-                    
-                    resp_prod = curl_requests.post("https://open-api.affiliate.shopee.com.br/graphql", data=payload_prod, headers=headers_prod, timeout=8)
-                    if resp_prod.status_code == 200:
-                        nodes = resp_prod.json().get("data", {}).get("productOfferV2", {}).get("nodes", [])
-                        if nodes:
-                            node = nodes[0]
-                            title = node.get("productName")
-                            image_url = node.get("imageUrl")
-                            p_val = node.get("price")
-                            if p_val:
-                                price_str = f"R$ {float(p_val):.2f}".replace('.', ',')
         except Exception as e:
-            print(f"⚠️ Erro na API Shopee: {e}")
+            print(f"⚠️ Erro ao gerar link curto: {e}")
+
+    # 2. Extração de metadados da página (OpenGraph) para garantir título e imagem reais do produto
+    try:
+        resp_page = curl_requests.get(final_url, impersonate="chrome120", timeout=8)
+        if resp_page.status_code == 200:
+            soup = BeautifulSoup(resp_page.text, 'html.parser')
+            
+            og_image = soup.find("meta", property="og:image")
+            if og_image and og_image.get("content"):
+                image_url = og_image["content"]
+                
+            og_title = soup.find("meta", property="og:title")
+            if og_title and og_title.get("content"):
+                title = og_title["content"]
+    except Exception as e:
+        print(f"⚠️ Erro ao fazer parsing da página web: {e}")
 
     return {
         "title": title or "🔥 Super Achadinho Shopee",
@@ -188,4 +181,3 @@ def mercado_pago_webhook():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
-
