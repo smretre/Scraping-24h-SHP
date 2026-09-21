@@ -3,7 +3,6 @@ import re
 import time
 import hashlib
 import json
-from bs4 import BeautifulSoup
 from flask import Flask, request, jsonify
 import mercadopago
 from PIL import Image, ImageDraw
@@ -42,10 +41,11 @@ def get_shopee_product_info(product_url):
     image_url = None
     price_str = None
 
-    # 1. Tenta obter o link de afiliado oficial via API GraphQL
     if SHOPEE_APP_ID and SHOPEE_SECRET:
         try:
             timestamp = int(time.time())
+            
+            # 1. Gerar Link de Afiliado Curto
             mutation = 'mutation GenerateLink($originUrl: String!) { generateShortLink(input: { originUrl: $originUrl }) { shortLink } }'
             payload_link = json.dumps({"query": mutation, "variables": {"originUrl": final_url}})
             sig_link = generate_shopee_signature(SHOPEE_APP_ID, SHOPEE_SECRET, payload_link, timestamp)
@@ -58,24 +58,34 @@ def get_shopee_product_info(product_url):
             resp_link = curl_requests.post("https://open-api.affiliate.shopee.com.br/graphql", data=payload_link, headers=headers, timeout=8)
             if resp_link.status_code == 200:
                 short_link = resp_link.json().get("data", {}).get("generateShortLink", {}).get("shortLink")
-        except Exception as e:
-            print(f"⚠️ Erro ao gerar link curto: {e}")
 
-    # 2. Extração de metadados da página (OpenGraph) para garantir título e imagem reais do produto
-    try:
-        resp_page = curl_requests.get(final_url, impersonate="chrome120", timeout=8)
-        if resp_page.status_code == 200:
-            soup = BeautifulSoup(resp_page.text, 'html.parser')
-            
-            og_image = soup.find("meta", property="og:image")
-            if og_image and og_image.get("content"):
-                image_url = og_image["content"]
-                
-            og_title = soup.find("meta", property="og:title")
-            if og_title and og_title.get("content"):
-                title = og_title["content"]
-    except Exception as e:
-        print(f"⚠️ Erro ao fazer parsing da página web: {e}")
+            # 2. Obter Detalhes do Produto (Título, Imagem e Preço) via API GraphQL
+            slug_match = re.search(r'shopee\.com\.br/([^/?#]+)', final_url)
+            if slug_match:
+                raw_slug = slug_match.group(1)
+                keyword = re.sub(r'-i\.\d+\.\d+$', '', raw_slug).replace('-', ' ')
+                if len(keyword) > 3:
+                    query_prod = "query { productOfferV2(keyword: \"" + keyword + "\", limit: 1) { nodes { productName imageUrl price } } }"
+                    payload_prod = json.dumps({"query": query_prod, "variables": None, "operationName": None})
+                    sig_prod = generate_shopee_signature(SHOPEE_APP_ID, SHOPEE_SECRET, payload_prod, timestamp)
+                    
+                    headers_prod = {
+                        "Content-Type": "application/json",
+                        "Authorization": f"SHA256 Credential={SHOPEE_APP_ID}, Timestamp={timestamp}, Signature={sig_prod}"
+                    }
+                    
+                    resp_prod = curl_requests.post("https://open-api.affiliate.shopee.com.br/graphql", data=payload_prod, headers=headers_prod, timeout=8)
+                    if resp_prod.status_code == 200:
+                        nodes = resp_prod.json().get("data", {}).get("productOfferV2", {}).get("nodes", [])
+                        if nodes:
+                            node = nodes[0]
+                            title = node.get("productName")
+                            image_url = node.get("imageUrl")
+                            p_val = node.get("price")
+                            if p_val:
+                                price_str = f"R$ {float(p_val):.2f}".replace('.', ',')
+        except Exception as e:
+            print(f"⚠️ Erro na API Shopee: {e}")
 
     return {
         "title": title or "🔥 Super Achadinho Shopee",
@@ -124,7 +134,7 @@ async def setup_telegram_app():
     application = Application.builder().token(TELEGRAM_TOKEN).build()
     
     async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        await update.message.reply_text("🚀 Envie o link de um produto da Shopee para criar o seu card promocional!")
+        await update.message.reply_text("✔️ Envie o link de um produto da Shopee para criar o seu card promocional!")
 
     async def process_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = update.message.text
