@@ -29,7 +29,8 @@ app = Flask(__name__)
 # Estados da Conversa Passo a Passo
 ASK_IMAGE = 1
 ASK_TITLE = 2
-ASK_CHANNEL = 3
+ASK_PRICE = 3
+ASK_CHANNEL = 4
 
 # --- INTEGRAÇÃO COM A API DA SHOPEE ---
 def generate_shopee_signature(app_id, secret, payload, timestamp):
@@ -109,8 +110,8 @@ def generate_card_image(image_source, price_str):
     prod_img = None
     if image_source:
         try:
-            if isinstance(image_source, bytes):
-                prod_img = Image.open(BytesIO(image_source)).convert("RGBA")
+            if isinstance(image_source, (bytes, bytearray)):
+                prod_img = Image.open(BytesIO(bytes(image_source))).convert("RGBA")
             else:
                 headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0"}
                 response = curl_requests.get(image_source, headers=headers, impersonate="chrome120", timeout=10)
@@ -174,14 +175,14 @@ async def process_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     product_info = get_shopee_product_info(text)
 
     context.user_data["link"] = product_info["link"]
-    context.user_data["price"] = product_info["price"] or "Imperdível"
+    context.user_data["price"] = product_info["price"]
     context.user_data["title"] = product_info["title"]
     context.user_data["image_source"] = product_info["image"]
 
     if not product_info["image"]:
         await update.message.reply_text(
             "⚠️ Não foi possível detetar a imagem automaticamente.\n\n"
-            "📸 **Passo 1/3:** Envie a foto (JPG/PNG) do produto:",
+            "📸 Envie a foto (JPG/PNG) do produto:",
             parse_mode="Markdown"
         )
         return ASK_IMAGE
@@ -189,13 +190,21 @@ async def process_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not product_info["title"]:
         await update.message.reply_text(
             "⚠️ Não foi possível detetar o título automaticamente.\n\n"
-            "📝 **Passo 2/3:** Digite e envie o **título do produto**:",
+            "📝 Digite e envie o **título do produto**:",
             parse_mode="Markdown"
         )
         return ASK_TITLE
 
+    if not product_info["price"]:
+        await update.message.reply_text(
+            "⚠️ Não foi possível detetar o preço automaticamente.\n\n"
+            "💰 Digite e envie o **preço do produto** (ex: `R$ 19,90`):",
+            parse_mode="Markdown"
+        )
+        return ASK_PRICE
+
     await update.message.reply_text(
-        "📢 **Passo 3/3:** Envie o **ID ou Username do canal/grupo** de destino (ex: `@seu_canal` ou `-100123456789`):",
+        "📢 Envie o **ID ou Username do canal/grupo** de destino (ex: `@seu_canal` ou `-100123456789`):",
         parse_mode="Markdown"
     )
     return ASK_CHANNEL
@@ -207,15 +216,18 @@ async def receive_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     photo_file = await update.message.photo[-1].get_file()
     image_bytes = await photo_file.download_as_bytearray()
-    
     context.user_data["image_source"] = image_bytes
 
-    await update.message.reply_text(
-        "✅ Imagem guardada com sucesso!\n\n"
-        "📝 **Passo 2/3:** Agora digite e envie o **título do produto**:",
-        parse_mode="Markdown"
-    )
-    return ASK_TITLE
+    if not context.user_data.get("title"):
+        await update.message.reply_text("📝 Agora digite e envie o **título do produto**:", parse_mode="Markdown")
+        return ASK_TITLE
+    
+    if not context.user_data.get("price"):
+        await update.message.reply_text("💰 Agora digite e envie o **preço do produto** (ex: `R$ 19,90`):", parse_mode="Markdown")
+        return ASK_PRICE
+
+    await update.message.reply_text("📢 Envie o **ID ou Username do canal/grupo** de destino:", parse_mode="Markdown")
+    return ASK_CHANNEL
 
 async def receive_title(update: Update, context: ContextTypes.DEFAULT_TYPE):
     title = update.message.text
@@ -225,9 +237,24 @@ async def receive_title(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     context.user_data["title"] = title
 
+    if not context.user_data.get("price"):
+        await update.message.reply_text("💰 Agora digite e envie o **preço do produto** (ex: `R$ 19,90`):", parse_mode="Markdown")
+        return ASK_PRICE
+
+    await update.message.reply_text("📢 Envie o **ID ou Username do canal/grupo** de destino:", parse_mode="Markdown")
+    return ASK_CHANNEL
+
+async def receive_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    price = update.message.text.strip()
+    if not price:
+        await update.message.reply_text("⚠️ Por favor, envie um preço válido:")
+        return ASK_PRICE
+
+    context.user_data["price"] = price
+
     await update.message.reply_text(
-        "✅ Título guardado com sucesso!\n\n"
-        "📢 **Passo 3/3:** Envie o **ID ou Username do canal/grupo** de destino (ex: `@seu_canal` ou `-100123456789`):",
+        "✅ Preço guardado com sucesso!\n\n"
+        "📢 Envie o **ID ou Username do canal/grupo** de destino (ex: `@seu_canal` ou `-100123456789`):",
         parse_mode="Markdown"
     )
     return ASK_CHANNEL
@@ -295,13 +322,11 @@ def run_flask():
 
 # --- INICIALIZAÇÃO PRINCIPAL DO BOT (LONG POLLING) ---
 def main():
-    # Inicia o servidor Flask numa thread separada para o Render detetar a porta aberta
     import threading
     flask_thread = threading.Thread(target=run_flask)
     flask_thread.daemon = True
     flask_thread.start()
 
-    # Configura a aplicação Telegram
     application = Application.builder().token(TELEGRAM_TOKEN).build()
     
     conv_handler = ConversationHandler(
@@ -309,6 +334,7 @@ def main():
         states={
             ASK_IMAGE: [MessageHandler(filters.PHOTO, receive_image)],
             ASK_TITLE: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_title)],
+            ASK_PRICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_price)],
             ASK_CHANNEL: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_channel_and_send)],
         },
         fallbacks=[CommandHandler("cancel", cancel)],
