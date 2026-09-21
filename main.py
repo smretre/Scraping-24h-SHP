@@ -128,14 +128,32 @@ def generate_card_image(image_source, price_str):
     draw.rectangle([(0, 0), (canvas_width, 120)], fill="#FFCC00")
     draw.text((40, 35), "🔥 CORRE! OFERTA IMPERDÍVEL", fill="#000000")
 
+    # Área central dedicada à imagem (Do Y=120 até Y=820 -> Altura de 700px)
+    target_w, target_h = 800, 700
+    target_y_start = 120
+
     if prod_img:
-        prod_img.thumbnail((700, 600))
-        x_pos = (canvas_width - prod_img.width) // 2
-        y_pos = 150 + (600 - prod_img.height) // 2
-        card.paste(prod_img, (x_pos, y_pos), prod_img if prod_img.mode == 'RGBA' else None)
+        # Redimensionamento inteligente para preencher o espaço inteiro (Estilo Cover)
+        img_w, img_h = prod_img.size
+        ratio = max(target_w / img_w, target_h / img_h)
+        new_w = int(img_w * ratio)
+        new_h = int(img_h * ratio)
+        
+        prod_img = prod_img.resize((new_w, new_h), Image.Resampling.LANCZOS)
+        
+        # Centraliza o corte (crop) caso a imagem seja maior que a área do card
+        left = (new_w - target_w) // 2
+        top = (new_h - target_h) // 2
+        right = left + target_w
+        bottom = top + target_h
+        
+        prod_img = prod_img.crop((left, top, right, bottom))
+        
+        # Cola a imagem preenchendo toda a tela central
+        card.paste(prod_img, (0, target_y_start), prod_img if prod_img.mode == 'RGBA' else None)
     else:
-        draw.rectangle([(100, 200), (700, 700)], fill="#FFF0EE")
-        draw.text((220, 430), "📦 PRODUTO SHOPEE", fill="#EE4D2D")
+        draw.rectangle([(0, target_y_start), (canvas_width, target_y_start + target_h)], fill="#FFF0EE")
+        draw.text((280, 460), "📦 PRODUTO SHOPEE", fill="#EE4D2D")
 
     # Rodapé Laranja
     draw.rectangle([(0, 820), (canvas_width, canvas_height)], fill="#EE4D2D")
