@@ -23,7 +23,7 @@ SHOPEE_SECRET = os.getenv("SHOPEE_SECRET")
 # Inicializa SDK do Mercado Pago
 sdk = mercadopago.SDK(MP_ACCESS_TOKEN) if MP_ACCESS_TOKEN else None
 
-# Instância Flask de nível superior exigida pela Vercel
+# Flask criado apenas para manter a porta aberta exigida pelo Render (Health Check)
 app = Flask(__name__)
 
 # Estados da Conversa Passo a Passo
@@ -202,7 +202,7 @@ async def process_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def receive_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message.photo:
-        await update.message.reply_text("⚠️ Por favor, envie uma foto válida (em formato de imagem):")
+        await update.message.reply_text("⚠️ Por favor, envie uma foto válida:")
         return ASK_IMAGE
 
     photo_file = await update.message.photo[-1].get_file()
@@ -272,49 +272,10 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Operação cancelada.")
     return ConversationHandler.END
 
-async def setup_telegram_app():
-    application = Application.builder().token(TELEGRAM_TOKEN).build()
-    
-    conv_handler = ConversationHandler(
-        entry_points=[MessageHandler(filters.TEXT & ~filters.COMMAND, process_link)],
-        states={
-            ASK_IMAGE: [
-                MessageHandler(filters.PHOTO, receive_image)
-            ],
-            ASK_TITLE: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, receive_title)
-            ],
-            ASK_CHANNEL: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, receive_channel_and_send)
-            ],
-        },
-        fallbacks=[CommandHandler("cancel", cancel)],
-    )
-
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(conv_handler)
-    
-    await application.initialize()
-    return application
-
-# --- ROTAS WEBHOOK DO SERVIDOR ---
+# --- ROTA WEBHOOK DO MERCADO PAGO E HEALTH CHECK ---
 @app.route("/", methods=["GET"])
 def home():
-    return "Bot Serverless Online!", 200
-
-@app.route("/telegram-webhook", methods=["POST"])
-def telegram_webhook():
-    import asyncio
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    
-    async def process():
-        application = await setup_telegram_app()
-        update = Update.de_json(request.get_json(force=True), application.bot)
-        await application.process_update(update)
-
-    loop.run_until_complete(process())
-    return jsonify({"status": "ok"}), 200
+    return "Bot Render Ativo!", 200
 
 @app.route("/webhook", methods=["POST"])
 def mercado_pago_webhook():
@@ -328,5 +289,36 @@ def mercado_pago_webhook():
                 print(f"✅ Pagamento aprovado para o ID: {telegram_id}")
     return jsonify({"status": "ok"}), 200
 
+def run_flask():
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
+
+# --- INICIALIZAÇÃO PRINCIPAL DO BOT (LONG POLLING) ---
+def main():
+    # Inicia o servidor Flask numa thread separada para o Render detetar a porta aberta
+    import threading
+    flask_thread = threading.Thread(target=run_flask)
+    flask_thread.daemon = True
+    flask_thread.start()
+
+    # Configura a aplicação Telegram
+    application = Application.builder().token(TELEGRAM_TOKEN).build()
+    
+    conv_handler = ConversationHandler(
+        entry_points=[MessageHandler(filters.TEXT & ~filters.COMMAND, process_link)],
+        states={
+            ASK_IMAGE: [MessageHandler(filters.PHOTO, receive_image)],
+            ASK_TITLE: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_title)],
+            ASK_CHANNEL: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_channel_and_send)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+    )
+
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(conv_handler)
+
+    print("🤖 Bot iniciado com sucesso no Render via Long Polling...")
+    application.run_polling()
+
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
+    main()
