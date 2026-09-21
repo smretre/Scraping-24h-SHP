@@ -160,12 +160,10 @@ def get_shopee_product_info(product_url):
             if resp_link.status_code == 200:
                 short_link = resp_link.json().get("data", {}).get("generateShortLink", {}).get("shortLink")
 
-            # 2. Tentar extrair o nome do produto diretamente do slug da URL para usar como palavra-chave na API de ofertas
-            # Exemplo: shopee.com.br/nome-do-produto-i.123.456 -> "nome do produto"
+            # 2. Tentar extrair o nome do produto da URL para buscar na API
             slug_match = re.search(r'shopee\.com\.br/([^/?#]+)', final_url)
             if slug_match:
                 raw_slug = slug_match.group(1)
-                # Remove IDs finais se existirem no slug
                 keyword = re.sub(r'-i\.\d+\.\d+$', '', raw_slug).replace('-', ' ')
                 
                 if len(keyword) > 3:
@@ -193,11 +191,12 @@ def get_shopee_product_info(product_url):
             print(f"⚠️ Erro ao consultar API de Afiliados: {e}", flush=True)
 
     affiliate_link = short_link or final_url
-    title = title or "Oferta Imperdível Shopee"
-    price_str = price_str or "Ver no App"
+    title = title or "🔥 Super Achadinho Shopee"
+    price_str = price_str or "Imperdível"
 
+    # Se a API não retornou imagem, usamos uma imagem pública válida da Shopee para o card nunca ficar branco
     if not image_url:
-        image_url = "https://cf.shopee.com.br/file/br-11134207-7r98o-lz420y33s71f28"
+        image_url = "https://down-br.img.susercontent.com/file/br-11134207-7r98o-lz420y33s71f28"
 
     return {
         "title": title,
