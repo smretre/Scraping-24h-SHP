@@ -7,8 +7,11 @@ from flask import Flask, request, jsonify
 import mercadopago
 from PIL import Image, ImageDraw
 from io import BytesIO
-from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram import Update, ChatMember
+from telegram.ext import (
+    Application, CommandHandler, MessageHandler, 
+    ConversationHandler, filters, ContextTypes
+)
 from curl_cffi import requests as curl_requests
 
 # --- VARIÁVEIS DE AMBIENTE ---
@@ -22,6 +25,10 @@ sdk = mercadopago.SDK(MP_ACCESS_TOKEN) if MP_ACCESS_TOKEN else None
 
 # Instância Flask de nível superior exigida pela Vercel
 app = Flask(__name__)
+
+# Estados da Conversa
+WAITING_FOR_DATA = 1
+WAITING_FOR_CHANNEL = 2
 
 # --- INTEGRAÇÃO COM A API DA SHOPEE ---
 def generate_shopee_signature(app_id, secret, payload, timestamp):
@@ -52,7 +59,7 @@ def get_shopee_product_info(product_url):
             timestamp = int(time.time())
             
             # 1. Gerar Link de Afiliado Curto
-            mutation = 'mutation GenerateLink($originUrl: String!) { generateShortLink(input: { originUrl: $originUrl }) { shortLink } }'
+            mutation = 'mutation GenerateLink($originUrl: String!) { generateShortLink(input: { originUrl:$originUrl }) { shortLink } }'
             payload_link = json.dumps({"query": mutation, "variables": {"originUrl": final_url}})
             sig_link = generate_shopee_signature(SHOPEE_APP_ID, SHOPEE_SECRET, payload_link, timestamp)
             
@@ -90,23 +97,26 @@ def get_shopee_product_info(product_url):
             print(f"⚠️ Erro na API Shopee: {e}")
 
     return {
-        "title": title or "🔥 Super Achadinho Shopee",
+        "title": title,
         "image": image_url,
-        "price": price_str or "Imperdível",
+        "price": price_str,
         "link": short_link or final_url
     }
 
 # --- GERADOR DE CARD / IMAGEM ---
-def generate_card_image(image_url, price_str):
+def generate_card_image(image_source, price_str):
     prod_img = None
-    if image_url:
+    if image_source:
         try:
-            headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0"}
-            response = curl_requests.get(image_url, headers=headers, impersonate="chrome120", timeout=10)
-            if response.status_code == 200:
-                prod_img = Image.open(BytesIO(response.content)).convert("RGBA")
+            if isinstance(image_source, bytes):
+                prod_img = Image.open(BytesIO(image_source)).convert("RGBA")
+            else:
+                headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0"}
+                response = curl_requests.get(image_source, headers=headers, impersonate="chrome120", timeout=10)
+                if response.status_code == 200:
+                    prod_img = Image.open(BytesIO(response.content)).convert("RGBA")
         except Exception as e:
-            print(f"⚠️ Erro ao descarregar imagem do produto: {e}")
+            print(f"⚠️ Erro ao carregar imagem: {e}")
 
     canvas_width, canvas_height = 800, 1000
     card = Image.new("RGBA", (canvas_width, canvas_height), (255, 255, 255, 255))
@@ -123,43 +133,159 @@ def generate_card_image(image_url, price_str):
         card.paste(prod_img, (x_pos, y_pos), prod_img if prod_img.mode == 'RGBA' else None)
     else:
         draw.rectangle([(100, 200), (700, 700)], fill="#FFF0EE")
-        draw.text((250, 430), "📦 TOQUE NO LINK DO PRODUTO", fill="#EE4D2D")
+        draw.text((220, 430), "📦 PRODUTO SHOPEE", fill="#EE4D2D")
 
     # Rodapé Laranja
     draw.rectangle([(0, 820), (canvas_width, canvas_height)], fill="#EE4D2D")
-    draw.text((40, 850), f"Por: {price_str}", fill="#FFFFFF")
+    draw.text((40, 850), f"Por: {price_str or 'Imperdível'}", fill="#FFFFFF")
 
     output_stream = BytesIO()
     card.convert("RGB").save(output_stream, format="JPEG")
     output_stream.seek(0)
     return output_stream
 
-# --- CONFIGURAÇÃO DO BOT TELEGRAM (MODO WEBHOOK) ---
+# --- VERIFICAÇÃO SE O BOT É ADMINISTRADOR ---
+async def verify_bot_admin(bot, chat_id):
+    try:
+        bot_member = await bot.get_chat_member(chat_id=chat_id, user_id=bot.id)
+        if bot_member.status in [ChatMember.ADMINISTRATOR, ChatMember.OWNER]:
+            return True
+    except Exception as e:
+        print(f"⚠️ Erro ao verificar privilégios de ADM no chat {chat_id}: {e}")
+    return False
+
+# --- FLUXO DO BOT TELEGRAM ---
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "✔️ **Bem-vindo ao Bot de Afiliados Shopee!**\n\n"
+        "Envie o link de um produto da Shopee para criarmos a sua postagem promocional.",
+        parse_mode="Markdown"
+    )
+    return ConversationHandler.END
+
+async def process_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
+    if "shopee" not in text.lower():
+        await update.message.reply_text("Por favor, envie um link válido da Shopee.")
+        return ConversationHandler.END
+
+    await update.message.reply_text("🔍 A analisar o link e a recolher os dados do produto...")
+    product_info = get_shopee_product_info(text)
+
+    # Guarda os dados no contexto
+    context.user_data["link"] = product_info["link"]
+    context.user_data["price"] = product_info["price"] or "Imperdível"
+    context.user_data["title"] = product_info["title"]
+    context.user_data["image_source"] = product_info["image"]
+
+    # Se faltar dados, pede ao utilizador
+    if not product_info["image"] or not product_info["title"]:
+        missing = []
+        if not product_info["image"]: missing.append("a imagem (envie a foto JPG/PNG ou o link da imagem)")
+        if not product_info["title"]: missing.append("o título do produto")
+        
+        msg = f"⚠️ Não foi possível obter automaticamente: **{' e '.join(missing)}**.\n\nPor favor, **envie agora a informação em falta**:"
+        await update.message.reply_text(msg, parse_mode="Markdown")
+        return WAITING_FOR_DATA
+
+    # Se recolheu tudo, passa para o pedido do canal
+    await update.message.reply_text(
+        "📢 Para onde deseja enviar a postagem?\n\n"
+        "Envie o **ID ou Username do canal/grupo** (ex: `@seu_canal` ou `-100123456789`).\n"
+        "*(Nota: O bot precisa de ser Administrador lá!)*",
+        parse_mode="Markdown"
+    )
+    return WAITING_FOR_CHANNEL
+
+async def receive_missing_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message.photo:
+        photo_file = await update.message.photo[-1].get_file()
+        context.user_data["image_source"] = await photo_file.download_as_bytearray()
+    elif update.message.text:
+        text = update.message.text
+        if text.startswith("http"):
+            context.user_data["image_source"] = text
+        else:
+            context.user_data["title"] = text
+
+    if not context.user_data.get("image_source"):
+        await update.message.reply_text("⚠️ Por favor, envie a imagem do produto (foto ou link) para prosseguir.")
+        return WAITING_FOR_DATA
+    
+    if not context.user_data.get("title"):
+        await update.message.reply_text("📝 Quase lá! Agora envie o **título do produto**:")
+        return WAITING_FOR_DATA
+
+    # Se já tem imagem e título, pede o canal de destino
+    await update.message.reply_text(
+        "📢 Dados recolhidos com sucesso!\n\n"
+        "Agora envie o **ID ou Username do canal/grupo** de destino (ex: `@seu_canal` ou `-100123456789`):",
+        parse_mode="Markdown"
+    )
+    return WAITING_FOR_CHANNEL
+
+async def receive_channel_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    target_channel = update.message.text.strip()
+    context.user_data["target_channel"] = target_channel
+
+    # Valida se o bot é administrador do canal/grupo indicado
+    await update.message.reply_text("🔍 A verificar permissões de Administrador no canal indicado...")
+    is_admin = await verify_bot_admin(context.bot, target_channel)
+
+    if not is_admin:
+        await update.message.reply_text(
+            f"❌ O bot **não é Administrador** no destino `{target_channel}` ou o ID/Username está incorreto.\n\n"
+            "Adicione o bot como Administrador do canal com permissão para publicar mensagens e envie o ID/Username novamente:",
+            parse_mode="Markdown"
+        )
+        return WAITING_FOR_CHANNEL
+
+    # Prepara os dados e gera o card
+    title = context.user_data.get("title", "🔥 Super Achadinho Shopee")
+    price = context.user_data.get("price", "Imperdível")
+    link = context.user_data.get("link")
+    img_src = context.user_data.get("image_source")
+
+    card_img = generate_card_image(img_src, price)
+    caption = (
+        f"🔥 *{title}*\n\n"
+        f"💥 *Por: {price}*\n\n"
+        f"🛒 *Link de Compra:* {link}"
+    )
+
+    try:
+        await context.bot.send_photo(chat_id=target_channel, photo=card_img, caption=caption, parse_mode="Markdown")
+        await update.message.reply_text(f"✅ Postagem criada e enviada com sucesso para o canal `{target_channel}`!", parse_mode="Markdown")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Erro ao enviar para o canal: {e}")
+
+    context.user_data.clear()
+    return ConversationHandler.END
+
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data.clear()
+    await update.message.reply_text("Operação cancelada.")
+    return ConversationHandler.END
+
 async def setup_telegram_app():
     application = Application.builder().token(TELEGRAM_TOKEN).build()
     
-    async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        await update.message.reply_text("🚀 Envie o link de um produto da Shopee para criar o seu card promocional!")
-
-    async def process_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        text = update.message.text
-        if "shopee" not in text.lower():
-            await update.message.reply_text("Por enquanto este bot aceita apenas links da Shopee!")
-            return
-
-        product_info = get_shopee_product_info(text)
-        card_img = generate_card_image(product_info["image"], product_info["price"])
-
-        caption = (
-            f"🔥 *{product_info['title']}*\n\n"
-            f"💥 *Por: {product_info['price']}*\n\n"
-            f"🛒 *Link de Compra:* {product_info['link']}"
-        )
-
-        await context.bot.send_photo(chat_id=update.effective_chat.id, photo=card_img, caption=caption, parse_mode="Markdown")
+    conv_handler = ConversationHandler(
+        entry_points=[MessageHandler(filters.TEXT & ~filters.COMMAND, process_link)],
+        states={
+            WAITING_FOR_DATA: [
+                MessageHandler(filters.PHOTO | filters.TEXT & ~filters.COMMAND, receive_missing_data)
+            ],
+            WAITING_FOR_CHANNEL: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, receive_channel_and_send)
+            ],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+    )
 
     application.add_handler(CommandHandler("start", start))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, process_link))
+    application.add_handler(conv_handler)
+    
     await application.initialize()
     return application
 
