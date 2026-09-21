@@ -163,7 +163,7 @@ async def setup_telegram_app():
     application = Application.builder().token(TELEGRAM_TOKEN).build()
     
     async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        await update.message.reply_text("✔️ Envie o link de um produto da Shopee para criar o seu card promocional!")
+        await update.message.reply_text("🚀 Envie o link de um produto da Shopee para criar o seu card promocional!")
 
     async def process_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = update.message.text
