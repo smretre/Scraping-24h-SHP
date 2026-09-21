@@ -169,7 +169,7 @@ def get_shopee_product_info(product_url):
                 keyword = re.sub(r'-i\.\d+\.\d+$', '', raw_slug).replace('-', ' ')
                 
                 if len(keyword) > 3:
-                    query_prod = f'query{{productOfferV2(keyword:"{keyword}",limit:1){{nodes{{productName,imageUrl,price}}}}}'
+                    query_prod = "query { productOfferV2(keyword: \"" + keyword + "\", limit: 1) { nodes { productName imageUrl price } } }"
                     payload_prod = json.dumps({"query": query_prod, "variables": None, "operationName": None})
                     sig_prod = generate_shopee_signature(SHOPEE_APP_ID, SHOPEE_SECRET, payload_prod, timestamp)
                     
