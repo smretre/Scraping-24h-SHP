@@ -20,6 +20,7 @@ SHOPEE_SECRET = os.getenv("SHOPEE_SECRET")
 # Inicializa SDK do Mercado Pago
 sdk = mercadopago.SDK(MP_ACCESS_TOKEN) if MP_ACCESS_TOKEN else None
 
+# Instância Flask de nível superior exigida pela Vercel
 app = Flask(__name__)
 
 # --- INTEGRAÇÃO COM A API DA SHOPEE ---
@@ -65,9 +66,7 @@ def get_shopee_product_info(product_url):
                 data_link = resp_link.json().get("data", {}).get("generateShortLink", {})
                 short_link = data_link.get("shortLink")
 
-            # 2. Obter Detalhes do Produto via API GraphQL usando o link original limpo
-            query_detail = 'query GenerateLinkDetails($url: String!) { productDetail(url: $url) { productName imageUrl price } }'
-            # Alternativa: se productDetail não estiver ativo no plano, usamos productOfferV2 com o slug extraído
+            # 2. Obter Detalhes do Produto via API GraphQL
             slug_match = re.search(r'shopee\.com\.br/([^/?#]+)', final_url)
             if slug_match:
                 raw_slug = slug_match.group(1)
@@ -90,19 +89,6 @@ def get_shopee_product_info(product_url):
         except Exception as e:
             print(f"⚠️ Erro na API Shopee: {e}")
 
-    # 3. Fallback de imagem caso a API não retorne a URL da imagem
-    if not image_url:
-        try:
-            # Tenta extrair o ID da loja e do item diretamente da URL para montar a imagem padrão da Shopee se possível
-            # Exemplo: -i.123456.7891011
-            match_ids = re.search(r'-i\.(\d+)\.(\d+)', final_url)
-            if match_ids:
-                shop_id, item_id = match_ids.groups()
-                # A Shopee armazena a imagem de capa principal num padrão previsível de hash ou ID em alguns casos, 
-                # mas podemos usar metadados públicos se acessados via url limpa de partilha.
-        except Exception:
-            pass
-
     return {
         "title": title or "🔥 Super Achadinho Shopee",
         "image": image_url,
@@ -115,7 +101,6 @@ def generate_card_image(image_url, price_str):
     prod_img = None
     if image_url:
         try:
-            # Headers de disfarce para descarregar a imagem com sucesso
             headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0"}
             response = curl_requests.get(image_url, headers=headers, impersonate="chrome120", timeout=10)
             if response.status_code == 200:
@@ -132,13 +117,11 @@ def generate_card_image(image_url, price_str):
     draw.text((40, 35), "🔥 CORRE! OFERTA IMPERDÍVEL", fill="#000000")
 
     if prod_img:
-        # Redimensiona mantendo proporção para encaixar perfeitamente no espaço central
         prod_img.thumbnail((700, 600))
         x_pos = (canvas_width - prod_img.width) // 2
         y_pos = 150 + (600 - prod_img.height) // 2
         card.paste(prod_img, (x_pos, y_pos), prod_img if prod_img.mode == 'RGBA' else None)
     else:
-        # Placeholder visual amigável caso a imagem falhe
         draw.rectangle([(100, 200), (700, 700)], fill="#FFF0EE")
         draw.text((250, 430), "📦 TOQUE NO LINK DO PRODUTO", fill="#EE4D2D")
 
@@ -197,7 +180,7 @@ def telegram_webhook():
         await application.process_update(update)
 
     loop.run_until_complete(process())
-    return jsonify({"status": "ok"}}, 200
+    return jsonify({"status": "ok"}), 200
 
 @app.route("/webhook", methods=["POST"])
 def mercado_pago_webhook():
