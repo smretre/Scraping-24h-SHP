@@ -29,8 +29,9 @@ app = Flask(__name__)
 # Estados da Conversa Passo a Passo
 ASK_IMAGE = 1
 ASK_TITLE = 2
-ASK_PRICE = 3
-ASK_CHANNEL = 4
+ASK_OLD_PRICE = 3
+ASK_PRICE = 4
+ASK_CHANNEL = 5
 
 # --- INTEGRAÇÃO COM A API DA SHOPEE ---
 def generate_shopee_signature(app_id, secret, payload, timestamp):
@@ -105,7 +106,7 @@ def get_shopee_product_info(product_url):
         "link": short_link or final_url
     }
 
-# --- GERADOR DE CARD / IMAGEM (Limpo, sem tarjas) ---
+# --- GERADOR DE CARD / IMAGEM (Limpo, 100% preenchido) ---
 def generate_card_image(image_source):
     prod_img = None
     if image_source:
@@ -125,7 +126,6 @@ def generate_card_image(image_source):
     draw = ImageDraw.Draw(card)
 
     if prod_img:
-        # Preenche 100% do card com a foto do produto sem distorcer (Estilo Cover)
         img_w, img_h = prod_img.size
         ratio = max(canvas_width / img_w, canvas_height / img_h)
         new_w = int(img_w * ratio)
@@ -201,16 +201,17 @@ async def process_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not product_info["price"]:
         await update.message.reply_text(
             "⚠️ Não foi possível detetar o preço automaticamente.\n\n"
-            "💰 Digite e envie o **preço do produto** (ex: `R$ 19,90`):",
+            "❌ Digite e envie o **Preço Antigo** (ex: `R$ 49,90`):",
             parse_mode="Markdown"
         )
-        return ASK_PRICE
+        return ASK_OLD_PRICE
 
+    # Se já tem o preço atual, mas queremos garantir o antigo customizado, pedimos o antigo também
     await update.message.reply_text(
-        "📢 Envie o **ID ou Username do canal/grupo** de destino (ex: `@seu_canal` ou `-100123456789`):",
+        "❌ Digite e envie o **Preço Antigo** do produto (ex: `R$ 49,90`):",
         parse_mode="Markdown"
     )
-    return ASK_CHANNEL
+    return ASK_OLD_PRICE
 
 async def receive_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message.photo:
@@ -225,9 +226,9 @@ async def receive_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("📝 Agora digite e envie o **título do produto**:", parse_mode="Markdown")
         return ASK_TITLE
     
-    if not context.user_data.get("price"):
-        await update.message.reply_text("💰 Agora digite e envie o **preço do produto** (ex: `R$ 19,90`):", parse_mode="Markdown")
-        return ASK_PRICE
+    if not context.user_data.get("old_price"):
+        await update.message.reply_text("❌ Agora digite e envie o **Preço Antigo** (ex: `R$ 49,90`):", parse_mode="Markdown")
+        return ASK_OLD_PRICE
 
     await update.message.reply_text("📢 Envie o **ID ou Username do canal/grupo** de destino:", parse_mode="Markdown")
     return ASK_CHANNEL
@@ -240,23 +241,41 @@ async def receive_title(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     context.user_data["title"] = title
 
-    if not context.user_data.get("price"):
-        await update.message.reply_text("💰 Agora digite e envie o **preço do produto** (ex: `R$ 19,90`):", parse_mode="Markdown")
-        return ASK_PRICE
+    if not context.user_data.get("old_price"):
+        await update.message.reply_text("❌ Agora digite e envie o **Preço Antigo** (ex: `R$ 49,90`):", parse_mode="Markdown")
+        return ASK_OLD_PRICE
 
     await update.message.reply_text("📢 Envie o **ID ou Username do canal/grupo** de destino:", parse_mode="Markdown")
+    return ASK_CHANNEL
+
+async def receive_old_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    old_price = update.message.text.strip()
+    if not old_price:
+        await update.message.reply_text("⚠️ Por favor, envie um preço antigo válido:")
+        return ASK_OLD_PRICE
+
+    context.user_data["old_price"] = old_price
+
+    if not context.user_data.get("price"):
+        await update.message.reply_text("💰 Agora digite e envie o **Preço Atual (Por)** (ex: `R$ 12,99`):", parse_mode="Markdown")
+        return ASK_PRICE
+
+    await update.message.reply_text(
+        "📢 Envie o **ID ou Username do canal/grupo** de destino (ex: `@seu_canal` ou `-100123456789`):",
+        parse_mode="Markdown"
+    )
     return ASK_CHANNEL
 
 async def receive_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
     price = update.message.text.strip()
     if not price:
-        await update.message.reply_text("⚠️ Por favor, envie um preço válido:")
+        await update.message.reply_text("⚠️ Por favor, envie um preço atual válido:")
         return ASK_PRICE
 
     context.user_data["price"] = price
 
     await update.message.reply_text(
-        "✅ Preço guardado com sucesso!\n\n"
+        "✅ Preços guardados com sucesso!\n\n"
         "📢 Envie o **ID ou Username do canal/grupo** de destino (ex: `@seu_canal` ou `-100123456789`):",
         parse_mode="Markdown"
     )
@@ -277,19 +296,23 @@ async def receive_channel_and_send(update: Update, context: ContextTypes.DEFAULT
         return ASK_CHANNEL
 
     title = context.user_data.get("title", "🔥 Super Achadinho Shopee")
-    price = context.user_data.get("price", "Imperdível")
+    old_price = context.user_data.get("old_price", "R$ 0,00")
+    price = context.user_data.get("price", "R$ 0,00")
     link = context.user_data.get("link")
     img_src = context.user_data.get("image_source")
 
     card_img = generate_card_image(img_src)
     
-    # Texto limpo sem o link exposto
+    # Legenda customizada com o preço antigo informado por si
     caption = (
-        f"🔥 *{title}*\n\n"
-        f"💲 *Por Apenas: {price}*"
+        f"🛒 *{title}*\n\n"
+        f"❌ De: {old_price}\n\n"
+        f"💲 Por: {price}\n\n"
+        f"⭐ Avaliação: 4.8 / 5.0\n\n"
+        f"🔥 Oferta por tempo limitado!"
     )
 
-    # Criação do Botão Inline de Comprar Agora
+    # Botão Inline de Comprar Agora
     keyboard = [[InlineKeyboardButton("COMPRAR AGORA 🔥", url=link)]]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
@@ -348,6 +371,7 @@ def main():
         states={
             ASK_IMAGE: [MessageHandler(filters.PHOTO, receive_image)],
             ASK_TITLE: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_title)],
+            ASK_OLD_PRICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_old_price)],
             ASK_PRICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_price)],
             ASK_CHANNEL: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_channel_and_send)],
         },
