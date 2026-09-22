@@ -120,7 +120,7 @@ def generate_card_image(image_source, price_str):
         except Exception as e:
             print(f"⚠️ Erro ao carregar imagem: {e}")
 
-    canvas_width, canvas_height = 800, 1000
+    canvas_width, canvas_height = 900, 900
     card = Image.new("RGBA", (canvas_width, canvas_height), (255, 255, 255, 255))
     draw = ImageDraw.Draw(card)
 
@@ -149,8 +149,8 @@ def generate_card_image(image_source, price_str):
     card.paste(overlay, (0, canvas_height - 140), overlay)
     
     draw = ImageDraw.Draw(card)
-    draw.text((40, canvas_height - 105), "🔥 OFERTA IMPERDÍVEL", fill="#FFCC00")
-    draw.text((40, canvas_height - 65), f"Por: {price_str or 'Imperdível'}", fill="#FFFFFF")
+    draw.text((40, canvas_height - 105), "🔥", fill="#FFCC00")
+    draw.text((40, canvas_height - 65), f".: {price_str or '..'}", fill="#FFFFFF")
 
     output_stream = BytesIO()
     card.convert("RGB").save(output_stream, format="JPEG")
@@ -293,8 +293,8 @@ async def receive_channel_and_send(update: Update, context: ContextTypes.DEFAULT
     card_img = generate_card_image(img_src, price)
     caption = (
         f"🔥 *{title}*\n\n"
-        f"💥 *Por: {price}*\n\n"
-        f"🛒 *Link de Compra:* {link}"
+        f"💲 *Por Apenas: {price}*\n\n"
+        f"🛒 *COMPRAR AGORA 🔥:* {link}"
     )
 
     try:
