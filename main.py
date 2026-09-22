@@ -7,7 +7,7 @@ from flask import Flask, request, jsonify
 import mercadopago
 from PIL import Image, ImageDraw
 from io import BytesIO
-from telegram import Update, ChatMember
+from telegram import Update, ChatMember, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, 
     ConversationHandler, filters, ContextTypes
@@ -105,8 +105,8 @@ def get_shopee_product_info(product_url):
         "link": short_link or final_url
     }
 
-# --- GERADOR DE CARD / IMAGEM ---
-def generate_card_image(image_source, price_str):
+# --- GERADOR DE CARD / IMAGEM (Limpo, sem tarjas) ---
+def generate_card_image(image_source):
     prod_img = None
     if image_source:
         try:
@@ -125,7 +125,7 @@ def generate_card_image(image_source, price_str):
     draw = ImageDraw.Draw(card)
 
     if prod_img:
-        # Preenche 100% do card (800x1000) com a foto do produto (Estilo Cover)
+        # Preenche 100% do card com a foto do produto sem distorcer (Estilo Cover)
         img_w, img_h = prod_img.size
         ratio = max(canvas_width / img_w, canvas_height / img_h)
         new_w = int(img_w * ratio)
@@ -142,21 +142,12 @@ def generate_card_image(image_source, price_str):
         card.paste(prod_img, (0, 0), prod_img if prod_img.mode == 'RGBA' else None)
     else:
         draw.rectangle([(0, 0), (canvas_width, canvas_height)], fill="#FFF0EE")
-        draw.text((280, 480), "📦 PRODUTO SHOPEE", fill="#EE4D2D")
-
-    # Opcional: Uma tarja semi-transparente no rodapé só para destacar o preço na própria imagem
-    overlay = Image.new("RGBA", (canvas_width, 140), (0, 0, 0, 160)) # Fundo preto transparente
-    card.paste(overlay, (0, canvas_height - 140), overlay)
-    
-    draw = ImageDraw.Draw(card)
-    draw.text((40, canvas_height - 105), "🔥", fill="#FFCC00")
-    draw.text((40, canvas_height - 65), f".: {price_str or '..'}", fill="#FFFFFF")
+        draw.text((320, 440), "📦 PRODUTO SHOPEE", fill="#EE4D2D")
 
     output_stream = BytesIO()
     card.convert("RGB").save(output_stream, format="JPEG")
     output_stream.seek(0)
     return output_stream
-
 
 # --- VERIFICAÇÃO DE ADMINISTRADOR ---
 async def verify_bot_admin(bot, chat_id):
@@ -290,15 +281,26 @@ async def receive_channel_and_send(update: Update, context: ContextTypes.DEFAULT
     link = context.user_data.get("link")
     img_src = context.user_data.get("image_source")
 
-    card_img = generate_card_image(img_src, price)
+    card_img = generate_card_image(img_src)
+    
+    # Texto limpo sem o link exposto
     caption = (
         f"🔥 *{title}*\n\n"
-        f"💲 *Por Apenas: {price}*\n\n"
-        f"🛒 *COMPRAR AGORA 🔥:* {link}"
+        f"💲 *Por Apenas: {price}*"
     )
 
+    # Criação do Botão Inline de Comprar Agora
+    keyboard = [[InlineKeyboardButton("COMPRAR AGORA 🔥", url=link)]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
     try:
-        await context.bot.send_photo(chat_id=target_channel, photo=card_img, caption=caption, parse_mode="Markdown")
+        await context.bot.send_photo(
+            chat_id=target_channel, 
+            photo=card_img, 
+            caption=caption, 
+            parse_mode="Markdown",
+            reply_markup=reply_markup
+        )
         await update.message.reply_text(f"✅ Postagem criada e enviada com sucesso para `{target_channel}`!", parse_mode="Markdown")
     except Exception as e:
         await update.message.reply_text(f"❌ Erro ao enviar postagem: {e}")
