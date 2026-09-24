@@ -22,7 +22,7 @@ SHOPEE_APP_ID = os.getenv("SHOPEE_APP_ID")
 SHOPEE_SECRET = os.getenv("SHOPEE_SECRET")
 
 # IDs do Telegram dos Administradores com acesso livre total (Substitua pelos seus IDs reais)
-ADMIN_IDS = [int(x.strip()) for x in os.getenv("ADMIN_IDS", "6063904865", "6779689073").split(",") if x.strip()]
+ADMIN_IDS = [int(x.strip()) for x in os.getenv("ADMIN_IDS", "6063904865,6779689073").split(",") if x.strip()]
 
 # Inicializa SDK do Mercado Pago
 sdk = mercadopago.SDK(MP_ACCESS_TOKEN) if MP_ACCESS_TOKEN else None
