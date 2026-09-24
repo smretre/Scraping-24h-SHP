@@ -36,7 +36,7 @@ ASK_OLD_PRICE = 5
 ASK_PRICE = 6
 ASK_CHANNEL = 7
 
-# --- INTEGRAÇÃO COM MERCADO LIVRE (100% Automático via Scraping com suporte a meli.la) ---
+# --- INTEGRAÇÃO COM MERCADO LIVRE (100% Automático via Scraping com suporte a meli.la e múltiplos seletores de preço) ---
 def get_mercadolibre_product_info(product_url):
     title = None
     image_url = None
@@ -55,21 +55,40 @@ def get_mercadolibre_product_info(product_url):
         if resp.status_code == 200:
             html = resp.text
             
-            # Extrai o Título pelas Meta Tags Open Graph
+            # 1. Extrai o Título pelas Meta Tags Open Graph
             match_title = re.search(r'<meta property="og:title" content="([^"]+)"', html)
             if match_title:
                 title = match_title.group(1)
 
-            # Extrai a Imagem pelas Meta Tags Open Graph
+            # 2. Extrai a Imagem pelas Meta Tags Open Graph
             match_img = re.search(r'<meta property="og:image" content="([^"]+)"', html)
             if match_img:
                 image_url = match_img.group(1)
 
-            # Extrai o Preço (busca padrão de itemprop ou dados estruturados da página)
+            # 3. Extrai o Preço (Tentativa A: Meta tag itemprop padrão)
             match_price = re.search(r'<meta itemprop="price" content="([0-9.]+)"', html)
             if match_price:
                 p_val = float(match_price.group(1))
                 price_str = f"R$ {p_val:.2f}".replace('.', ',')
+            
+            # Tentativa B: Busca por classes nativas de preço do Mercado Livre (ex: andes-money-amount__fraction)
+            if not price_str:
+                match_fraction = re.search(r'class="andes-money-amount__fraction"[^>]*>([0-9.]+)</span>', html)
+                if match_fraction:
+                    fraction_val = match_fraction.group(1).replace('.', '')
+                    match_cents = re.search(r'class="andes-money-amount__cents"[^>]*>([0-9]+)</span>', html)
+                    cents_val = match_cents.group(1) if match_cents else "00"
+                    
+                    p_val = float(f"{fraction_val}.{cents_val}")
+                    price_str = f"R$ {p_val:.2f}".replace('.', ',')
+
+            # Tentativa C: JSON-LD estruturado da página
+            if not price_str:
+                match_json_price = re.search(r'"price":\s*"?([0-9.]+)"?', html)
+                if match_json_price:
+                    p_val = float(match_json_price.group(1))
+                    price_str = f"R$ {p_val:.2f}".replace('.', ',')
+
     except Exception as e:
         print(f"⚠️ Erro ao extrair dados do Mercado Livre: {e}")
 
