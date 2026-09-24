@@ -192,10 +192,15 @@ def get_temu_product_info(product_url):
             if match_img:
                 image_url = match_img.group(1)
 
-            match_price = re.search(r'"price":\s*"([0-9.]+)"', html) or re.search(r'"price":\s*([0-9.]+)', html)
-            if match_price:
-                p_val = float(match_price.group(1))
-                price_str = f"R$ {p_val:.2f}".replace('.', ',')
+            prices = re.findall(r'R\$\s*([0-9]+[.,][0-9]{2})', html)
+            if prices:
+                price_str = f"R$ {prices[0]}"
+            else:
+                match_price = re.search(r'"price":\s*"([0-9.]+)"', html) or re.search(r'"price":\s*([0-9.]+)', html)
+                if match_price:
+                    p_val = float(match_price.group(1))
+                    if p_val < 10000:
+                        price_str = f"R$ {p_val:.2f}".replace('.', ',')
     except Exception as e:
         print(f"⚠️ Erro ao extrair dados da Temu: {e}")
 
@@ -250,7 +255,7 @@ def get_shein_product_info(product_url):
         "link": final_link
     }
 
-# --- GERADOR DE CARD / IMAGEM ---
+# --- GERADOR DE CARD / IMAGEM (Ajustado para exibição 100% proporcional e sem cortes) ---
 def generate_card_image(image_source):
     prod_img = None
     if image_source:
@@ -271,12 +276,14 @@ def generate_card_image(image_source):
 
     if prod_img:
         img_w, img_h = prod_img.size
+        # Mantém a proporção completa para caber perfeitamente no quadrado sem cortar as pontas
         ratio = min(canvas_width / img_w, canvas_height / img_h)
         new_w = int(img_w * ratio)
         new_h = int(img_h * ratio)
         
         prod_img = prod_img.resize((new_w, new_h), Image.Resampling.LANCZOS)
         
+        # Centraliza o produto na tela branca
         left = (canvas_width - new_w) // 2
         top = (canvas_height - new_h) // 2
         
@@ -350,14 +357,18 @@ async def process_ml_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     context.user_data["title"] = info["title"] or "Produto Mercado Livre"
     context.user_data["image_source"] = info["image"]
-    context.user_data["price"] = info["price"] or "R$ 0,00"
+    context.user_data["price"] = info["price"] or ""
     context.user_data["link"] = info["link"]
 
     if not info["image"]:
         await update.message.reply_text("⚠️ Não conseguimos puxar a foto automaticamente. Envie a foto do produto:")
         return ASK_IMAGE
 
-    await update.message.reply_text("❌ Digite e envie o **Preço Antigo** (ex: `R$ 299,00` ou `0` se não tiver):", parse_mode="Markdown")
+    if not info["price"]:
+        await update.message.reply_text("💰 Digite e envie o **Preço Atual (Por)** do produto:", parse_mode="Markdown")
+        return ASK_PRICE
+
+    await update.message.reply_text(f"💰 Preço detectado: `{info['price']}`\n\n❌ Digite e envie o **Preço Antigo** (ou `0` se não tiver):", parse_mode="Markdown")
     return ASK_OLD_PRICE
 
 # Processar Shopee
@@ -370,7 +381,7 @@ async def process_shopee_link(update: Update, context: ContextTypes.DEFAULT_TYPE
     product_info = get_shopee_product_info(text)
 
     context.user_data["link"] = product_info["link"]
-    context.user_data["price"] = product_info["price"] or "R$ 0,00"
+    context.user_data["price"] = product_info["price"] or ""
     context.user_data["title"] = product_info["title"]
     context.user_data["image_source"] = product_info["image"]
 
@@ -382,7 +393,11 @@ async def process_shopee_link(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text("📝 Digite e envie o **título do produto**:", parse_mode="Markdown")
         return ASK_TITLE
 
-    await update.message.reply_text("❌ Digite e envie o **Preço Antigo** (ex: `R$ 49,90`):", parse_mode="Markdown")
+    if not product_info["price"]:
+        await update.message.reply_text("💰 Digite e envie o **Preço Atual (Por)** do produto:", parse_mode="Markdown")
+        return ASK_PRICE
+
+    await update.message.reply_text(f"💰 Preço detectado: `{product_info['price']}`\n\n❌ Digite e envie o **Preço Antigo** (ou `0` se não tiver):", parse_mode="Markdown")
     return ASK_OLD_PRICE
 
 # Processar Temu
@@ -396,14 +411,18 @@ async def process_temu_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     context.user_data["title"] = info["title"] or "Produto Temu"
     context.user_data["image_source"] = info["image"]
-    context.user_data["price"] = info["price"] or "R$ 0,00"
+    context.user_data["price"] = info["price"] or ""
     context.user_data["link"] = info["link"]
 
     if not info["image"]:
         await update.message.reply_text("⚠️ Não conseguimos puxar a foto automaticamente. Envie a foto do produto:")
         return ASK_IMAGE
 
-    await update.message.reply_text("❌ Digite e envie o **Preço Antigo** (ex: `R$ 150,00` ou `0` se não tiver):", parse_mode="Markdown")
+    if not info["price"]:
+        await update.message.reply_text("💰 Digite e envie o **Preço Atual (Por)** do produto:", parse_mode="Markdown")
+        return ASK_PRICE
+
+    await update.message.reply_text(f"💰 Preço detectado: `{info['price']}`\n\n❌ Digite e envie o **Preço Antigo** (ou `0` se não tiver):", parse_mode="Markdown")
     return ASK_OLD_PRICE
 
 # Processar Shein
@@ -417,14 +436,18 @@ async def process_shein_link(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     context.user_data["title"] = info["title"] or "Produto Shein"
     context.user_data["image_source"] = info["image"]
-    context.user_data["price"] = info["price"] or "R$ 0,00"
+    context.user_data["price"] = info["price"] or ""
     context.user_data["link"] = info["link"]
 
     if not info["image"]:
         await update.message.reply_text("⚠️ Não conseguimos puxar a foto automaticamente. Envie a foto do produto:")
         return ASK_IMAGE
 
-    await update.message.reply_text("❌ Digite e envie o **Preço Antigo** (ex: `R$ 120,00` ou `0` se não tiver):", parse_mode="Markdown")
+    if not info["price"]:
+        await update.message.reply_text("💰 Digite e envie o **Preço Atual (Por)** do produto:", parse_mode="Markdown")
+        return ASK_PRICE
+
+    await update.message.reply_text(f"💰 Preço detectado: `{info['price']}`\n\n❌ Digite e envie o **Preço Antigo** (ou `0` se não tiver):", parse_mode="Markdown")
     return ASK_OLD_PRICE
 
 async def receive_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -440,7 +463,11 @@ async def receive_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("📝 Agora digite e envie o **título do produto**:", parse_mode="Markdown")
         return ASK_TITLE
     
-    await update.message.reply_text("❌ Agora digite e envie o **Preço Antigo** (ex: `R$ 49,90`):", parse_mode="Markdown")
+    if not context.user_data.get("price"):
+        await update.message.reply_text("💰 Digite e envie o **Preço Atual (Por)**:", parse_mode="Markdown")
+        return ASK_PRICE
+
+    await update.message.reply_text("❌ Agora digite e envie o **Preço Antigo** (ou `0` se não tiver):", parse_mode="Markdown")
     return ASK_OLD_PRICE
 
 async def receive_title(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -450,23 +477,13 @@ async def receive_title(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ASK_TITLE
 
     context.user_data["title"] = title
-    await update.message.reply_text("❌ Agora digite e envie o **Preço Antigo** (ex: `R$ 49,90`):", parse_mode="Markdown")
-    return ASK_OLD_PRICE
-
-async def receive_old_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    old_price = update.message.text.strip()
-    if not old_price:
-        await update.message.reply_text("⚠️ Por favor, envie um preço antigo válido:")
-        return ASK_OLD_PRICE
-
-    context.user_data["old_price"] = old_price
-
-    if not context.user_data.get("price") or context.user_data.get("price") == "R$ 0,00":
-        await update.message.reply_text("💰 Agora digite e envie o **Preço Atual (Por)** (ex: `R$ 12,99`):", parse_mode="Markdown")
+    
+    if not context.user_data.get("price"):
+        await update.message.reply_text("💰 Digite e envie o **Preço Atual (Por)**:", parse_mode="Markdown")
         return ASK_PRICE
 
-    await update.message.reply_text("📢 Envie o **ID ou Username do canal/grupo** de destino:", parse_mode="Markdown")
-    return ASK_CHANNEL
+    await update.message.reply_text("❌ Agora digite e envie o **Preço Antigo** (ou `0` se não tiver):", parse_mode="Markdown")
+    return ASK_OLD_PRICE
 
 async def receive_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
     price = update.message.text.strip()
@@ -475,6 +492,16 @@ async def receive_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ASK_PRICE
 
     context.user_data["price"] = price
+    await update.message.reply_text("❌ Agora digite e envie o **Preço Antigo** (ou `0` se não tiver):", parse_mode="Markdown")
+    return ASK_OLD_PRICE
+
+async def receive_old_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    old_price = update.message.text.strip()
+    if not old_price:
+        await update.message.reply_text("⚠️ Por favor, envie um preço antigo válido ou `0`:")
+        return ASK_OLD_PRICE
+
+    context.user_data["old_price"] = old_price
     await update.message.reply_text("📢 Envie o **ID ou Username do canal/grupo** de destino:", parse_mode="Markdown")
     return ASK_CHANNEL
 
@@ -493,7 +520,7 @@ async def receive_channel_and_send(update: Update, context: ContextTypes.DEFAULT
         return ASK_CHANNEL
 
     title = context.user_data.get("title", "🔥 Super Oferta")
-    old_price = context.user_data.get("old_price", "R$ 0,00")
+    old_price = context.user_data.get("old_price", "0")
     price = context.user_data.get("price", "R$ 0,00")
     link = context.user_data.get("link")
     img_src = context.user_data.get("image_source")
