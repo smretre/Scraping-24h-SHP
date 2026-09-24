@@ -3,6 +3,7 @@ import re
 import time
 import hashlib
 import json
+from datetime import datetime, timedelta
 from flask import Flask, request, jsonify
 import mercadopago
 from PIL import Image, ImageDraw, ImageFilter
@@ -20,11 +21,18 @@ MP_ACCESS_TOKEN = os.getenv("MP_ACCESS_TOKEN")
 SHOPEE_APP_ID = os.getenv("SHOPEE_APP_ID")
 SHOPEE_SECRET = os.getenv("SHOPEE_SECRET")
 
+# IDs do Telegram dos Administradores com acesso livre total (Substitua pelos seus IDs reais)
+ADMIN_IDS = [int(x.strip()) for x in os.getenv("ADMIN_IDS", "6063904865", "6779689073").split(",") if x.strip()]
+
 # Inicializa SDK do Mercado Pago
 sdk = mercadopago.SDK(MP_ACCESS_TOKEN) if MP_ACCESS_TOKEN else None
 
 # Flask criado apenas para manter a porta aberta exigida pelo Render (Health Check)
 app = Flask(__name__)
+
+# --- BANCO DE DADOS EM MEMÓRIA (Recomenda-se usar SQLite/MongoDB em produção) ---
+# Estrutura: user_db[telegram_id] = {"tests_left": 5, "plan": None, "expires_at": datetime}
+user_db = {}
 
 # Estados da Conversa Passo a Passo
 SELECTING_PLATFORM = 0
@@ -39,6 +47,44 @@ ASK_PRICE = 8
 ASK_CHANNEL = 9
 TEMU_ASK_PRICE = 10 
 TEMU_ASK_TITLE = 11
+
+# --- PREÇOS DOS PLANOS (Em Reais) ---
+# Shopee e Temu mais baratas por exigirem mais trabalho manual do usuário
+PLAN_PRICES = {
+    "single_shopee": 19.90,
+    "single_temu": 19.90,
+    "single_ml": 29.90,
+    "single_shein": 29.90,
+    "duo": 39.90,      # Escolhe 2 plataformas
+    "pro": 59.90       # Todas as 4 plataformas (Ilimitado/Completo)
+}
+
+# --- FUNÇÕES DE CONTROLE DE ACESSO E PLANOS ---
+def check_user_access(user_id, platform):
+    # Admins têm acesso livre a tudo
+    if user_id in ADMIN_IDS:
+        return True, "admin"
+
+    if user_id not in user_db:
+        user_db[user_id] = {
+            "tests_left": 5,
+            "plan": None,
+            "platforms": [],
+            "expires_at": None
+        }
+
+    data = user_db[user_id]
+
+    # Verifica se tem plano ativo e se não expirou
+    if data["plan"] and data["expires_at"] and datetime.now() < data["expires_at"]:
+        if data["plan"] == "pro" or platform in data["platforms"]:
+            return True, "subscription"
+
+    # Se não tem plano ativo, consome os testes grátis globais
+    if data["tests_left"] > 0:
+        return True, "test"
+
+    return False, "expired"
 
 # --- INTEGRAÇÃO COM MERCADO LIVRE ---
 def get_mercadolibre_product_info(product_url):
@@ -57,7 +103,6 @@ def get_mercadolibre_product_info(product_url):
         
         if resp.status_code == 200:
             html = resp.text
-            
             match_title = re.search(r'<meta property="og:title" content="([^"]+)"', html)
             if match_title:
                 title = match_title.group(1)
@@ -77,7 +122,6 @@ def get_mercadolibre_product_info(product_url):
                     fraction_val = match_fraction.group(1).replace('.', '')
                     match_cents = re.search(r'class="andes-money-amount__cents"[^>]*>([0-9]+)</span>', html)
                     cents_val = match_cents.group(1) if match_cents else "00"
-                    
                     p_val = float(f"{fraction_val}.{cents_val}")
                     price_str = f"R$ {p_val:.2f}".replace('.', ',')
 
@@ -86,16 +130,10 @@ def get_mercadolibre_product_info(product_url):
                 if match_json_price:
                     p_val = float(match_json_price.group(1))
                     price_str = f"R$ {p_val:.2f}".replace('.', ',')
-
     except Exception as e:
         print(f"⚠️ Erro ao extrair dados do Mercado Livre: {e}")
 
-    return {
-        "title": title,
-        "image": image_url,
-        "price": price_str,
-        "link": final_link
-    }
+    return {"title": title, "image": image_url, "price": price_str, "link": final_link}
 
 # --- INTEGRAÇÃO COM A API DA SHOPEE ---
 def generate_shopee_signature(app_id, secret, payload, timestamp):
@@ -124,7 +162,6 @@ def get_shopee_product_info(product_url):
     if SHOPEE_APP_ID and SHOPEE_SECRET:
         try:
             timestamp = int(time.time())
-            
             mutation = 'mutation GenerateLink($originUrl: String!) { generateShortLink(input: { originUrl:$originUrl }) { shortLink } }'
             payload_link = json.dumps({"query": mutation, "variables": {"originUrl": final_url}})
             sig_link = generate_shopee_signature(SHOPEE_APP_ID, SHOPEE_SECRET, payload_link, timestamp)
@@ -161,12 +198,7 @@ def get_shopee_product_info(product_url):
         except Exception as e:
             print(f"⚠️ Erro na API Shopee: {e}")
 
-    return {
-        "title": title,
-        "image": image_url,
-        "price": price_str,
-        "link": short_link or final_url
-    }
+    return {"title": title, "image": image_url, "price": price_str, "link": short_link or final_url}
 
 # --- INTEGRAÇÃO COM A TEMU ---
 def get_temu_product_info(product_url):
@@ -185,7 +217,6 @@ def get_temu_product_info(product_url):
         
         if resp.status_code == 200:
             html = resp.text
-            
             match_title = re.search(r'<meta property="og:title" content="([^"]+)"', html)
             if match_title:
                 title = match_title.group(1)
@@ -214,12 +245,7 @@ def get_temu_product_info(product_url):
     except Exception as e:
         print(f"⚠️ Erro ao extrair dados da Temu: {e}")
 
-    return {
-        "title": title,
-        "image": image_url,
-        "price": price_str,
-        "link": final_link
-    }
+    return {"title": title, "image": image_url, "price": price_str, "link": final_link}
 
 # --- INTEGRAÇÃO COM A SHEIN ---
 def get_shein_product_info(product_url):
@@ -238,7 +264,6 @@ def get_shein_product_info(product_url):
         
         if resp.status_code == 200:
             html = resp.text
-            
             match_title = re.search(r'<meta property="og:title" content="([^"]+)"', html)
             if match_title:
                 title = match_title.group(1)
@@ -258,12 +283,7 @@ def get_shein_product_info(product_url):
     except Exception as e:
         print(f"⚠️ Erro ao extrair dados da Shein: {e}")
 
-    return {
-        "title": title,
-        "image": image_url,
-        "price": price_str,
-        "link": final_link
-    }
+    return {"title": title, "image": image_url, "price": price_str, "link": final_link}
 
 # --- GERADOR DE CARD / IMAGEM (Com Blur apenas para Temu e Shein) ---
 def generate_card_image(image_source, platform="mercadolivre"):
@@ -285,7 +305,6 @@ def generate_card_image(image_source, platform="mercadolivre"):
     draw = ImageDraw.Draw(card)
 
     if prod_img:
-        # Se for Temu ou Shein, aplica o fundo com desfoque (Blur)
         if platform in ["temu", "shein"]:
             bg_img = prod_img.copy()
             bg_w, bg_h = bg_img.size
@@ -303,17 +322,14 @@ def generate_card_image(image_source, platform="mercadolivre"):
             bg_img.alpha_composite(darken)
             card.paste(bg_img, (0, 0))
 
-        # Renderização do produto principal por inteiro e centralizado para todas as plataformas
         img_w, img_h = prod_img.size
         ratio = min(canvas_width / img_w, canvas_height / img_h)
         new_w = int(img_w * ratio)
         new_h = int(img_h * ratio)
         
         prod_img = prod_img.resize((new_w, new_h), Image.Resampling.LANCZOS)
-        
         left = (canvas_width - new_w) // 2
         top = (canvas_height - new_h) // 2
-        
         card.paste(prod_img, (left, top), prod_img if prod_img.mode == 'RGBA' else None)
     else:
         draw.rectangle([(0, 0), (canvas_width, canvas_height)], fill="#FFF0EE")
@@ -336,17 +352,26 @@ async def verify_bot_admin(bot, chat_id):
 
 # --- FLUXO DO BOT ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    
+    if user_id not in user_db and user_id not in ADMIN_IDS:
+        user_db[user_id] = {"tests_left": 5, "plan": None, "platforms": [], "expires_at": None}
+
+    tests_info = "Acesso Livre (Admin)" if user_id in ADMIN_IDS else f"Testes grátis restantes: {user_db[user_id]['tests_left']}/5"
+
     keyboard = [
         [InlineKeyboardButton("🟡 Mercado Livre", callback_data="plat_ml"),
-         InlineKeyboardButton("🟠 Shopee", callback_data="plat_shopee")],
-        [InlineKeyboardButton("🔴 Temu", callback_data="plat_temu"),
-         InlineKeyboardButton("🟣 Shein", callback_data="plat_shein")]
+         InlineKeyboardButton("🟠 Shopee (Mais Barata)", callback_data="plat_shopee")],
+        [InlineKeyboardButton("🔴 Temu (Mais Barata)", callback_data="plat_temu"),
+         InlineKeyboardButton("🟣 Shein", callback_data="plat_shein")],
+        [InlineKeyboardButton("💎 Ver Planos e Assinaturas", callback_data="menu_plans")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
     await update.message.reply_text(
-        "✔️ **Seja bem-vindo ao Bot de Afiliados Automatizado!**\n\n"
-        "Por favor, escolha abaixo em qual plataforma deseja gerar o anúncio:",
+        f"✔️ **Seja bem-vindo ao Bot de Afiliados Automatizado!**\n\n"
+        f"ℹ️ `{tests_info}`\n\n"
+        "Escolha abaixo em qual plataforma deseja gerar o anúncio ou ver nossos planos:",
         parse_mode="Markdown",
         reply_markup=reply_markup
     )
@@ -355,23 +380,98 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def platform_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    
-    if query.data == "plat_ml":
-        context.user_data["platform"] = "mercadolivre"
-        await query.message.reply_text("🟡 **Mercado Livre selecionado!**\n\nEnvie o link do produto:", parse_mode="Markdown")
-        return ML_ASK_LINK
-    elif query.data == "plat_shopee":
-        context.user_data["platform"] = "shopee"
-        await query.message.reply_text("🟠 **Shopee selecionado!**\n\nEnvie o link do produto da Shopee:", parse_mode="Markdown")
-        return SHOPEE_ASK_LINK
-    elif query.data == "plat_temu":
-        context.user_data["platform"] = "temu"
-        await query.message.reply_text("🔴 **Temu selecionado!**\n\nEnvie o link do produto da Temu:", parse_mode="Markdown")
-        return TEMU_ASK_LINK
-    elif query.data == "plat_shein":
-        context.user_data["platform"] = "shein"
-        await query.message.reply_text("🟣 **Shein selecionado!**\n\nEnvie o link do produto da Shein:", parse_mode="Markdown")
-        return SHEIN_ASK_LINK
+    user_id = update.effective_user.id
+
+    if query.data == "menu_plans":
+        keyboard = [
+            [InlineKeyboardButton("🟠 Shopee (R$ 19,90/mês)", callback_data="buy_single_shopee")],
+            [InlineKeyboardButton("🔴 Temu (R$ 19,90/mês)", callback_data="buy_single_temu")],
+            [InlineKeyboardButton("🟡 Mercado Livre (R$ 29,90/mês)", callback_data="buy_single_ml")],
+            [InlineKeyboardButton("🟣 Shein (R$ 29,90/mês)", callback_data="buy_single_shein")],
+            [InlineKeyboardButton("⭐ Plano Duo - 2 Plataformas (R$ 39,90)", callback_data="buy_duo")],
+            [InlineKeyboardButton("🚀 Plano PRO - Todas (R$ 59,90)", callback_data="buy_pro")],
+            [InlineKeyboardButton("🔙 Voltar", callback_data="back_start")]
+        ]
+        await query.message.edit_text(
+            "💎 **Planos de Assinatura (Duração de 30 dias):**\n\n"
+            "• **Shopee e Temu** possuem planos individuais mais baratos devido ao fluxo assistido.\n"
+            "• **Plano Duo**: Escolha 2 plataformas de sua preferência.\n"
+            "• **Plano PRO**: Acesso total a todas as 4 plataformas sem limites!\n\n"
+            "Escolha o plano desejado para gerar o pagamento via Mercado Pago:",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return SELECTING_PLATFORM
+
+    if query.data == "back_start":
+        await start(update, context)
+        return SELECTING_PLATFORM
+
+    # Mapeamento da plataforma escolhida
+    plat_map = {
+        "plat_ml": ("mercadolivre", ML_ASK_LINK),
+        "plat_shopee": ("shopee", SHOPEE_ASK_LINK),
+        "plat_temu": ("temu", TEMU_ASK_LINK),
+        "plat_shein": ("shein", SHEIN_ASK_LINK)
+    }
+
+    if query.data in plat_map:
+        platform_name, next_state = plat_map[query.data]
+        
+        # Valida se o usuário tem permissão (Assinatura, Teste ou Admin)
+        allowed, reason = check_user_access(user_id, platform_name)
+        
+        if not allowed:
+            await query.message.reply_text(
+                "❌ **Seus testes grátis acabaram!**\n\n"
+                "Para continuar postando ofertas, por favor escolha um plano de assinatura clicando em `/start`.",
+                parse_mode="Markdown"
+            )
+            return ConversationHandler.END
+
+        # Se usou um teste grátis, desconta 1
+        if reason == "test":
+            user_db[user_id]["tests_left"] -= 1
+
+        context.user_data["platform"] = platform_name
+        
+        names = {"mercadolivre": "🟡 Mercado Livre", "shopee": "🟠 Shopee", "temu": "🔴 Temu", "shein": "🟣 Shein"}
+        await query.message.reply_text(f"{names[platform_name]} selecionado!\n\nEnvie o link do produto:", parse_mode="Markdown")
+        return next_state
+
+    # Lógica de geração de Link de Pagamento Mercado Pago para Assinaturas
+    if query.data.startswith("buy_"):
+        plan_key = query.data.replace("buy_", "")
+        price = PLAN_PRICES.get(plan_key, 39.90)
+
+        if sdk:
+            preference_data = {
+                "items": [{
+                    "title": f"Assinatura Bot Afiliados - {plan_key.upper()} (30 dias)",
+                    "quantity": 1,
+                    "unit_price": float(price),
+                    "currency_id": "BRL"
+                }],
+                "external_reference": str(user_id),
+                "metadata": {"plan_key": plan_key}
+            }
+            try:
+                pref_response = sdk.preference().create(preference_data)
+                init_point = pref_response["response"]["init_point"]
+                
+                keyboard = [[InlineKeyboardButton("💳 Pagar com Mercado Pago", url=init_point)]]
+                await query.message.edit_text(
+                    f"🔗 **Link de pagamento gerado com sucesso!**\n\n"
+                    f"Valor: `R$ {price:.2f}`\n"
+                    f"Assim que o pagamento for aprovado, seu acesso será liberado automaticamente.",
+                    parse_mode="Markdown",
+                    reply_markup=InlineKeyboardMarkup(keyboard)
+                )
+            except Exception as e:
+                await query.message.reply_text(f"❌ Erro ao gerar pagamento no Mercado Pago: {e}")
+        else:
+            await query.message.reply_text("❌ Sistema de pagamento não configurado no momento.")
+        return SELECTING_PLATFORM
 
 # Processar Mercado Livre
 async def process_ml_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -464,7 +564,6 @@ async def process_temu_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     return TEMU_ASK_PRICE
 
-# Receber título digitado manualmente para a Temu
 async def receive_temu_title(update: Update, context: ContextTypes.DEFAULT_TYPE):
     title = update.message.text.strip()
     if not title:
@@ -482,7 +581,6 @@ async def receive_temu_title(update: Update, context: ContextTypes.DEFAULT_TYPE)
     )
     return TEMU_ASK_PRICE
 
-# Receber e validar o preço da Temu
 async def receive_temu_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
     price = update.message.text.strip()
     if not price:
@@ -647,7 +745,34 @@ def mercado_pago_webhook():
             payment_info = sdk.payment().get(payment_id).get("response", {})
             if payment_info.get("status") == "approved":
                 telegram_id = int(payment_info.get("external_reference"))
-                print(f"✅ Pagamento aprovado para o ID: {telegram_id}")
+                metadata = payment_info.get("metadata", {})
+                plan_key = metadata.get("plan_key", "pro")
+
+                # Define as permissões conforme o plano escolhido
+                expires_at = datetime.now() + timedelta(days=30)
+                platforms = []
+
+                if plan_key == "single_shopee":
+                    platforms = ["shopee"]
+                elif plan_key == "single_temu":
+                    platforms = ["temu"]
+                elif plan_key == "single_ml":
+                    platforms = ["mercadolivre"]
+                elif plan_key == "single_shein":
+                    platforms = ["shein"]
+                elif plan_key == "duo":
+                    # No Duo você pode ajustar quais plataformas libera (ex: padrão Shopee e Temu ou deixar o usuário escolher depois)
+                    platforms = ["shopee", "temu"]
+                elif plan_key == "pro":
+                    platforms = ["shopee", "temu", "mercadolivre", "shein"]
+
+                user_db[telegram_id] = {
+                    "tests_left": 0,
+                    "plan": "pro" if plan_key == "pro" else "single",
+                    "platforms": platforms,
+                    "expires_at": expires_at
+                }
+                print(f"✅ Pagamento aprovado e plano ativado para o usuário ID: {telegram_id} (Plano: {plan_key})")
     return jsonify({"status": "ok"}), 200
 
 def run_flask():
@@ -684,7 +809,7 @@ def main():
 
     application.add_handler(conv_handler)
 
-    print("🤖 Bot multiplataforma (Mercado Livre, Shopee, Temu e Shein) iniciado com sucesso no Render...")
+    print("🤖 Bot multiplataforma com sistema de assinaturas e testes iniciado no Render...")
     application.run_polling()
 
 if __name__ == "__main__":
