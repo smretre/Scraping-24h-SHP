@@ -5,7 +5,7 @@ import hashlib
 import json
 from flask import Flask, request, jsonify
 import mercadopago
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageOps, ImageFilter
 from io import BytesIO
 from telegram import Update, ChatMember, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import (
@@ -255,7 +255,7 @@ def get_shein_product_info(product_url):
         "link": final_link
     }
 
-# --- GERADOR DE CARD / IMAGEM (Ajustado para exibição 100% proporcional e sem cortes) ---
+# --- GERADOR DE CARD / IMAGEM (Preenchimento total com desfoque e produto inteiro em primeiro plano) ---
 def generate_card_image(image_source):
     prod_img = None
     if image_source:
@@ -275,17 +275,36 @@ def generate_card_image(image_source):
     draw = ImageDraw.Draw(card)
 
     if prod_img:
+        # 1. Cria o fundo desfocado estilo "blur" preenchendo 100% do quadrado
+        bg_img = prod_img.copy()
+        bg_w, bg_h = bg_img.size
+        bg_ratio = max(canvas_width / bg_w, canvas_height / bg_h)
+        bg_new_w = int(bg_w * bg_ratio)
+        bg_new_h = int(bg_h * bg_ratio)
+        bg_img = bg_img.resize((bg_new_w, bg_new_h), Image.Resampling.LANCZOS)
+        
+        # Recorta o centro para ajustar perfeitamente no canvas de 900x900
+        bg_left = (bg_new_w - canvas_width) // 2
+        bg_top = (bg_new_h - canvas_height) // 2
+        bg_img = bg_img.crop((bg_left, bg_top, bg_left + canvas_width, bg_top + canvas_height))
+        
+        # Aplica desfoque e escurecimento leve para destacar o produto na frente
+        bg_img = bg_img.filter(ImageFilter.GaussianBlur(15))
+        darken = Image.new("RGBA", (canvas_width, canvas_height), (0, 0, 0, 90)) # Camada escura translúcida
+        bg_img.alpha_composite(darken)
+        card.paste(bg_img, (0, 0))
+
+        # 2. Insere o produto em primeiro plano inteiro (sem cortes, usando 'min' para caber perfeitamente)
         img_w, img_h = prod_img.size
-        # Mantém a proporção completa para caber perfeitamente no quadrado sem cortar as pontas
-        ratio = min(canvas_width / img_w, canvas_height / img_h)
-        new_w = int(img_w * ratio)
-        new_h = int(img_h * ratio)
+        fg_ratio = min(canvas_width / img_w, canvas_height / img_h)
+        fg_new_w = int(img_w * fg_ratio)
+        fg_new_h = int(img_h * fg_ratio)
         
-        prod_img = prod_img.resize((new_w, new_h), Image.Resampling.LANCZOS)
+        prod_img = prod_img.resize((fg_new_w, fg_new_h), Image.Resampling.LANCZOS)
         
-        # Centraliza o produto na tela branca
-        left = (canvas_width - new_w) // 2
-        top = (canvas_height - new_h) // 2
+        # Centraliza o produto no canvas
+        left = (canvas_width - fg_new_w) // 2
+        top = (canvas_height - fg_new_h) // 2
         
         card.paste(prod_img, (left, top), prod_img if prod_img.mode == 'RGBA' else None)
     else:
