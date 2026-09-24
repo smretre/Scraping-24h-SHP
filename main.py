@@ -36,19 +36,22 @@ ASK_OLD_PRICE = 5
 ASK_PRICE = 6
 ASK_CHANNEL = 7
 
-# --- INTEGRAÇÃO COM MERCADO LIVRE (100% Automático via Scraping) ---
+# --- INTEGRAÇÃO COM MERCADO LIVRE (100% Automático via Scraping com suporte a meli.la) ---
 def get_mercadolibre_product_info(product_url):
     title = None
     image_url = None
     price_str = None
-    link = product_url
+    final_link = product_url
 
     try:
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
         }
-        resp = curl_requests.get(product_url, headers=headers, impersonate="chrome120", timeout=10)
+        # allow_redirects=True permite seguir links encurtados como meli.la até o produto final
+        resp = curl_requests.get(product_url, headers=headers, impersonate="chrome120", allow_redirects=True, timeout=10)
+        final_link = resp.url
+        
         if resp.status_code == 200:
             html = resp.text
             
@@ -74,7 +77,7 @@ def get_mercadolibre_product_info(product_url):
         "title": title,
         "image": image_url,
         "price": price_str,
-        "link": link
+        "link": final_link
     }
 
 # --- INTEGRAÇÃO COM A API DA SHOPEE ---
@@ -227,7 +230,7 @@ async def platform_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["platform"] = "mercadolivre"
         await query.message.reply_text(
             "🟡 **Mercado Livre selecionado!**\n\n"
-            "Envie o link do produto do Mercado Livre para extrairmos tudo automaticamente:",
+            "Envie o link do produto do Mercado Livre (ou encurtado meli.la) para extrairmos tudo automaticamente:",
             parse_mode="Markdown"
         )
         return ML_ASK_LINK
@@ -240,11 +243,18 @@ async def platform_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return SHOPEE_ASK_LINK
 
-# Fluxo Mercado Livre
+# Fluxo Mercado Livre atualizado para aceitar meli.la
 async def process_ml_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
-    if not text or ("mercadolivre" not in text.lower() and "mercadopago" not in text.lower() and "mercadolivre.com" not in text.lower()):
-        await update.message.reply_text("⚠️ Por favor, envie um link válido do Mercado Livre.")
+    if not text:
+        await update.message.reply_text("⚠️ Por favor, envie um link válido.")
+        return ML_ASK_LINK
+
+    termos_aceitos = ["mercadolivre", "mercadopago", "meli.la", "mercadolivre.com", "mercadolivre.com.br"]
+    eh_valido = any(termo in text.lower() for termo in termos_aceitos)
+
+    if not eh_valido:
+        await update.message.reply_text("⚠️ O bot não reconheceu este como um link válido do Mercado Livre. Tente enviar novamente:")
         return ML_ASK_LINK
 
     await update.message.reply_text("🔍 Extraindo informações do Mercado Livre automaticamente...")
