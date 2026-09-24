@@ -37,7 +37,8 @@ ASK_TITLE = 6
 ASK_OLD_PRICE = 7
 ASK_PRICE = 8
 ASK_CHANNEL = 9
-TEMU_ASK_PRICE = 10  # Novo estado específico para conferir o preço da Temu
+TEMU_ASK_PRICE = 10 
+TEMU_ASK_TITLE = 11  # Novo estado caso o título da Temu precise ser digitado manualmente
 
 # --- INTEGRAÇÃO COM MERCADO LIVRE ---
 def get_mercadolibre_product_info(product_url):
@@ -167,7 +168,7 @@ def get_shopee_product_info(product_url):
         "link": short_link or final_url
     }
 
-# --- INTEGRAÇÃO COM A TEMU ---
+# --- INTEGRAÇÃO COM A TEMU (Aprimorada para extrair título real) ---
 def get_temu_product_info(product_url):
     title = None
     image_url = None
@@ -185,22 +186,33 @@ def get_temu_product_info(product_url):
         if resp.status_code == 200:
             html = resp.text
             
+            # Tenta pegar og:title ou title padrão da aba
             match_title = re.search(r'<meta property="og:title" content="([^"]+)"', html)
             if match_title:
                 title = match_title.group(1)
+            else:
+                match_html_title = re.search(r'<title>([^<]+)</title>', html)
+                if match_html_title:
+                    title = match_html_title.group(1).replace(" - Temu Brazil", "").strip()
 
             match_img = re.search(r'<meta property="og:image" content="([^"]+)"', html)
             if match_img:
                 image_url = match_img.group(1)
 
+            # Procura por preços realistas no padrão brasileiro (ex: R$ 26,87) evitando valores inflados de cupons ou fretes
             prices = re.findall(r'R\$\s*([0-9]+[.,][0-9]{2})', html)
             if prices:
-                price_str = f"R$ {prices[0]}"
-            else:
-                match_price = re.search(r'"price":\s*"([0-9.]+)"', html) or re.search(r'"price":\s*([0-9.]+)', html)
-                if match_price:
-                    p_val = float(match_price.group(1))
-                    if p_val < 10000:
+                # Pega o menor preço plausível encontrado na página para evitar pegar valores totais falsos
+                valid_prices = [float(p.replace('.', '').replace(',', '.')) for p in prices if float(p.replace('.', '').replace(',', '.')) < 1000]
+                if valid_prices:
+                    p_val = min(valid_prices)
+                    price_str = f"R$ {p_val:.2f}".replace('.', ',')
+            
+            if not price_str:
+                match_json_price = re.search(r'"price":\s*"?([0-9.]+)"?', html)
+                if match_json_price:
+                    p_val = float(match_json_price.group(1))
+                    if p_val < 1000:
                         price_str = f"R$ {p_val:.2f}".replace('.', ',')
     except Exception as e:
         print(f"⚠️ Erro ao extrair dados da Temu: {e}")
@@ -256,7 +268,7 @@ def get_shein_product_info(product_url):
         "link": final_link
     }
 
-# --- GERADOR DE CARD / IMAGEM (Preenchimento total com desfoque e produto inteiro em primeiro plano) ---
+# --- GERADOR DE CARD / IMAGEM ---
 def generate_card_image(image_source):
     prod_img = None
     if image_source:
@@ -415,7 +427,7 @@ async def process_shopee_link(update: Update, context: ContextTypes.DEFAULT_TYPE
     await update.message.reply_text(f"💰 Preço detectado: `{product_info['price']}`\n\n❌ Digite e envie o **Preço Antigo** (ou `0` se não tiver):", parse_mode="Markdown")
     return ASK_OLD_PRICE
 
-# Processar Temu
+# Processar Temu (com verificação inteligente de título e preço)
 async def process_temu_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     if not text:
@@ -424,28 +436,54 @@ async def process_temu_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🔍 Extraindo informações da Temu...")
     info = get_temu_product_info(text)
 
-    context.user_data["title"] = info["title"] or "Produto Temu"
+    context.user_data["title"] = info["title"]
     context.user_data["image_source"] = info["image"]
-    context.user_data["price"] = info["price"] or ""
+    context.user_data["price"] = info["price"]
     context.user_data["link"] = info["link"]
 
     if not info["image"]:
         await update.message.reply_text("⚠️ Não conseguimos puxar a foto automaticamente. Envie a foto do produto:")
         return ASK_IMAGE
 
+    # Se o título não foi capturado corretamente, pede para o usuário digitar
+    if not info["title"]:
+        await update.message.reply_text(
+            "⚠️ Não conseguimos extrair o título automaticamente da Temu.\n\n"
+            "📝 Digite e envie o **título correto** do produto:",
+            parse_mode="Markdown"
+        )
+        return TEMU_ASK_TITLE
+
     detected_price = info["price"] if info["price"] else "Não detectado"
     
-    # Pergunta específica para checar se o preço da Temu está certo ou errado
     await update.message.reply_text(
-        f"🏷️ **Conferência de Preço (Temu)**\n\n"
-        f"O preço detectado foi: `{detected_price}`\n\n"
-        f"Está correto? Se estiver **certo**, digite o mesmo valor (ou envie-o novamente para confirmar). "
-        f"Se estiver **errado**, digite o **preço correto** agora (ex: `26,87` ou `R$ 26,87`):",
+        f"📦 **Título detectado:** `{info['title']}`\n\n"
+        f"🏷️ **Preço detectado:** `{detected_price}`\n\n"
+        f"O preço está correto? Se estiver **certo**, digite o mesmo valor para confirmar. "
+        f"Se estiver **errado**, digite o **preço correto** agora (ex: `26,87`):",
         parse_mode="Markdown"
     )
     return TEMU_ASK_PRICE
 
-# Receber e validar a confirmação ou alteração do preço da Temu
+# Receber título digitado manualmente para a Temu
+async def receive_temu_title(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    title = update.message.text.strip()
+    if not title:
+        await update.message.reply_text("⚠️ Por favor, envie um título válido:")
+        return TEMU_ASK_TITLE
+
+    context.user_data["title"] = title
+    detected_price = context.user_data.get("price", "Não detectado")
+
+    await update.message.reply_text(
+        f"🏷️ **Preço detectado:** `{detected_price}`\n\n"
+        f"O preço está correto? Se estiver **certo**, digite o mesmo valor para confirmar. "
+        f"Se estiver **errado**, digite o **preço correto** agora (ex: `26,87`):",
+        parse_mode="Markdown"
+    )
+    return TEMU_ASK_PRICE
+
+# Receber e validar o preço da Temu
 async def receive_temu_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
     price = update.message.text.strip()
     if not price:
@@ -632,7 +670,8 @@ def main():
             ML_ASK_LINK: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_ml_link)],
             SHOPEE_ASK_LINK: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_shopee_link)],
             TEMU_ASK_LINK: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_temu_link)],
-            TEMU_ASK_PRICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_temu_price)], # Estado adicionado aqui
+            TEMU_ASK_TITLE: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_temu_title)],
+            TEMU_ASK_PRICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_temu_price)],
             SHEIN_ASK_LINK: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_shein_link)],
             ASK_IMAGE: [MessageHandler(filters.PHOTO, receive_image)],
             ASK_TITLE: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_title)],
