@@ -37,6 +37,7 @@ ASK_TITLE = 6
 ASK_OLD_PRICE = 7
 ASK_PRICE = 8
 ASK_CHANNEL = 9
+TEMU_ASK_PRICE = 10  # Novo estado específico para conferir o preço da Temu
 
 # --- INTEGRAÇÃO COM MERCADO LIVRE ---
 def get_mercadolibre_product_info(product_url):
@@ -275,7 +276,6 @@ def generate_card_image(image_source):
     draw = ImageDraw.Draw(card)
 
     if prod_img:
-        # 1. Cria o fundo desfocado estilo "blur" preenchendo 100% do quadrado
         bg_img = prod_img.copy()
         bg_w, bg_h = bg_img.size
         bg_ratio = max(canvas_width / bg_w, canvas_height / bg_h)
@@ -283,18 +283,15 @@ def generate_card_image(image_source):
         bg_new_h = int(bg_h * bg_ratio)
         bg_img = bg_img.resize((bg_new_w, bg_new_h), Image.Resampling.LANCZOS)
         
-        # Recorta o centro para ajustar perfeitamente no canvas de 900x900
         bg_left = (bg_new_w - canvas_width) // 2
         bg_top = (bg_new_h - canvas_height) // 2
         bg_img = bg_img.crop((bg_left, bg_top, bg_left + canvas_width, bg_top + canvas_height))
         
-        # Aplica desfoque e escurecimento leve para destacar o produto na frente
         bg_img = bg_img.filter(ImageFilter.GaussianBlur(15))
-        darken = Image.new("RGBA", (canvas_width, canvas_height), (0, 0, 0, 90)) # Camada escura translúcida
+        darken = Image.new("RGBA", (canvas_width, canvas_height), (0, 0, 0, 90))
         bg_img.alpha_composite(darken)
         card.paste(bg_img, (0, 0))
 
-        # 2. Insere o produto em primeiro plano inteiro (sem cortes, usando 'min' para caber perfeitamente)
         img_w, img_h = prod_img.size
         fg_ratio = min(canvas_width / img_w, canvas_height / img_h)
         fg_new_w = int(img_w * fg_ratio)
@@ -302,7 +299,6 @@ def generate_card_image(image_source):
         
         prod_img = prod_img.resize((fg_new_w, fg_new_h), Image.Resampling.LANCZOS)
         
-        # Centraliza o produto no canvas
         left = (canvas_width - fg_new_w) // 2
         top = (canvas_height - fg_new_h) // 2
         
@@ -437,11 +433,27 @@ async def process_temu_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ Não conseguimos puxar a foto automaticamente. Envie a foto do produto:")
         return ASK_IMAGE
 
-    if not info["price"]:
-        await update.message.reply_text("💰 Digite e envie o **Preço Atual (Por)** do produto:", parse_mode="Markdown")
-        return ASK_PRICE
+    detected_price = info["price"] if info["price"] else "Não detectado"
+    
+    # Pergunta específica para checar se o preço da Temu está certo ou errado
+    await update.message.reply_text(
+        f"🏷️ **Conferência de Preço (Temu)**\n\n"
+        f"O preço detectado foi: `{detected_price}`\n\n"
+        f"Está correto? Se estiver **certo**, digite o mesmo valor (ou envie-o novamente para confirmar). "
+        f"Se estiver **errado**, digite o **preço correto** agora (ex: `26,87` ou `R$ 26,87`):",
+        parse_mode="Markdown"
+    )
+    return TEMU_ASK_PRICE
 
-    await update.message.reply_text(f"💰 Preço detectado: `{info['price']}`\n\n❌ Digite e envie o **Preço Antigo** (ou `0` se não tiver):", parse_mode="Markdown")
+# Receber e validar a confirmação ou alteração do preço da Temu
+async def receive_temu_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    price = update.message.text.strip()
+    if not price:
+        await update.message.reply_text("⚠️ Por favor, envie um preço válido:")
+        return TEMU_ASK_PRICE
+
+    context.user_data["price"] = price
+    await update.message.reply_text(f"✅ Preço definido: `{price}`\n\n❌ Agora digite e envie o **Preço Antigo** (ou `0` se não tiver):", parse_mode="Markdown")
     return ASK_OLD_PRICE
 
 # Processar Shein
@@ -620,6 +632,7 @@ def main():
             ML_ASK_LINK: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_ml_link)],
             SHOPEE_ASK_LINK: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_shopee_link)],
             TEMU_ASK_LINK: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_temu_link)],
+            TEMU_ASK_PRICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_temu_price)], # Estado adicionado aqui
             SHEIN_ASK_LINK: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_shein_link)],
             ASK_IMAGE: [MessageHandler(filters.PHOTO, receive_image)],
             ASK_TITLE: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_title)],
