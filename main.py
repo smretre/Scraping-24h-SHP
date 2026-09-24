@@ -38,18 +38,7 @@ ASK_OLD_PRICE = 7
 ASK_PRICE = 8
 ASK_CHANNEL = 9
 TEMU_ASK_PRICE = 10 
-TEMU_ASK_TITLE = 11
-
-# --- FUNÇÃO AUXILIAR PARA ESCAPAR MARKDOWN DO TELEGRAM ---
-def escape_markdown(text):
-    """Escapa caracteres especiais do Markdown V1 do Telegram para evitar erros de envio."""
-    if not text:
-        return ""
-    # Caracteres reservados no Markdown V1: _, *, `, [
-    escape_chars = ['_', '*', '`', '[']
-    for char in escape_chars:
-        text = text.replace(char, f"\\{char}")
-    return text
+TEMU_ASK_TITLE = 11  # Novo estado caso o título da Temu precise ser digitado manualmente
 
 # --- INTEGRAÇÃO COM MERCADO LIVRE ---
 def get_mercadolibre_product_info(product_url):
@@ -71,7 +60,7 @@ def get_mercadolibre_product_info(product_url):
             
             match_title = re.search(r'<meta property="og:title" content="([^"]+)"', html)
             if match_title:
-                title = match_title.group(1).strip()
+                title = match_title.group(1)
 
             match_img = re.search(r'<meta property="og:image" content="([^"]+)"', html)
             if match_img:
@@ -165,8 +154,6 @@ def get_shopee_product_info(product_url):
                         if nodes:
                             node = nodes[0]
                             title = node.get("productName")
-                            if title:
-                                title = title.strip()
                             image_url = node.get("imageUrl")
                             p_val = node.get("price")
                             if p_val:
@@ -181,7 +168,7 @@ def get_shopee_product_info(product_url):
         "link": short_link or final_url
     }
 
-# --- INTEGRAÇÃO COM A TEMU ---
+# --- INTEGRAÇÃO COM A TEMU (Aprimorada para extrair título real) ---
 def get_temu_product_info(product_url):
     title = None
     image_url = None
@@ -199,9 +186,10 @@ def get_temu_product_info(product_url):
         if resp.status_code == 200:
             html = resp.text
             
+            # Tenta pegar og:title ou title padrão da aba
             match_title = re.search(r'<meta property="og:title" content="([^"]+)"', html)
             if match_title:
-                title = match_title.group(1).strip()
+                title = match_title.group(1)
             else:
                 match_html_title = re.search(r'<title>([^<]+)</title>', html)
                 if match_html_title:
@@ -211,8 +199,10 @@ def get_temu_product_info(product_url):
             if match_img:
                 image_url = match_img.group(1)
 
+            # Procura por preços realistas no padrão brasileiro (ex: R$ 26,87) evitando valores inflados de cupons ou fretes
             prices = re.findall(r'R\$\s*([0-9]+[.,][0-9]{2})', html)
             if prices:
+                # Pega o menor preço plausível encontrado na página para evitar pegar valores totais falsos
                 valid_prices = [float(p.replace('.', '').replace(',', '.')) for p in prices if float(p.replace('.', '').replace(',', '.')) < 1000]
                 if valid_prices:
                     p_val = min(valid_prices)
@@ -234,7 +224,7 @@ def get_temu_product_info(product_url):
         "link": final_link
     }
 
-# --- INTEGRAÇÃO COM A SHEIN (Corrigida) ---
+# --- INTEGRAÇÃO COM A SHEIN ---
 def get_shein_product_info(product_url):
     title = None
     image_url = None
@@ -254,21 +244,15 @@ def get_shein_product_info(product_url):
             
             match_title = re.search(r'<meta property="og:title" content="([^"]+)"', html)
             if match_title:
-                title = match_title.group(1).strip()
-            else:
-                match_html_title = re.search(r'<title>([^<]+)</title>', html)
-                if match_html_title:
-                    title = match_html_title.group(1).replace(" | Shein Brasil", "").strip()
+                title = match_title.group(1)
 
             match_img = re.search(r'<meta property="og:image" content="([^"]+)"', html)
             if match_img:
                 image_url = match_img.group(1)
 
-            # Regex aprimorada para capturar o preço limpo na Shein
             match_price = re.search(r'class="country-price"[^>]*>.*?R\$\s*([0-9.,]+)', html, re.DOTALL)
             if match_price:
-                clean_price = match_price.group(1).strip()
-                price_str = f"R$ {clean_price}"
+                price_str = f"R$ {match_price.group(1)}"
             else:
                 match_json_price = re.search(r'"retailPrice":\s*\{\s*"amount":\s*"([0-9.]+)"', html)
                 if match_json_price:
@@ -443,7 +427,7 @@ async def process_shopee_link(update: Update, context: ContextTypes.DEFAULT_TYPE
     await update.message.reply_text(f"💰 Preço detectado: `{product_info['price']}`\n\n❌ Digite e envie o **Preço Antigo** (ou `0` se não tiver):", parse_mode="Markdown")
     return ASK_OLD_PRICE
 
-# Processar Temu
+# Processar Temu (com verificação inteligente de título e preço)
 async def process_temu_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     if not text:
@@ -461,6 +445,7 @@ async def process_temu_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ Não conseguimos puxar a foto automaticamente. Envie a foto do produto:")
         return ASK_IMAGE
 
+    # Se o título não foi capturado corretamente, pede para o usuário digitar
     if not info["title"]:
         await update.message.reply_text(
             "⚠️ Não conseguimos extrair o título automaticamente da Temu.\n\n"
@@ -480,6 +465,7 @@ async def process_temu_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     return TEMU_ASK_PRICE
 
+# Receber título digitado manualmente para a Temu
 async def receive_temu_title(update: Update, context: ContextTypes.DEFAULT_TYPE):
     title = update.message.text.strip()
     if not title:
@@ -497,6 +483,7 @@ async def receive_temu_title(update: Update, context: ContextTypes.DEFAULT_TYPE)
     )
     return TEMU_ASK_PRICE
 
+# Receber e validar o preço da Temu
 async def receive_temu_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
     price = update.message.text.strip()
     if not price:
@@ -524,10 +511,6 @@ async def process_shein_link(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if not info["image"]:
         await update.message.reply_text("⚠️ Não conseguimos puxar a foto automaticamente. Envie a foto do produto:")
         return ASK_IMAGE
-
-    if not info["title"]:
-        await update.message.reply_text("📝 Digite e envie o **título do produto**:", parse_mode="Markdown")
-        return ASK_TITLE
 
     if not info["price"]:
         await update.message.reply_text("💰 Digite e envie o **Preço Atual (Por)** do produto:", parse_mode="Markdown")
@@ -562,7 +545,7 @@ async def receive_title(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ Por favor, envie um título válido:")
         return ASK_TITLE
 
-    context.user_data["title"] = title.strip()
+    context.user_data["title"] = title
     
     if not context.user_data.get("price"):
         await update.message.reply_text("💰 Digite e envie o **Preço Atual (Por)**:", parse_mode="Markdown")
@@ -605,10 +588,7 @@ async def receive_channel_and_send(update: Update, context: ContextTypes.DEFAULT
         )
         return ASK_CHANNEL
 
-    # Aplica o escape de markdown em variáveis que podem conter caracteres especiais (como títulos da Shein/Temu)
-    raw_title = context.user_data.get("title", "🔥 Super Oferta")
-    title = escape_markdown(raw_title)
-    
+    title = context.user_data.get("title", "🔥 Super Oferta")
     old_price = context.user_data.get("old_price", "0")
     price = context.user_data.get("price", "R$ 0,00")
     link = context.user_data.get("link")
