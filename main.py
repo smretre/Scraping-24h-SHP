@@ -10,7 +10,7 @@ from io import BytesIO
 from telegram import Update, ChatMember, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, 
-    ConversationHandler, filters, ContextTypes
+    ConversationHandler, CallbackQueryHandler, filters, ContextTypes
 )
 from curl_cffi import requests as curl_requests
 
@@ -27,11 +27,55 @@ sdk = mercadopago.SDK(MP_ACCESS_TOKEN) if MP_ACCESS_TOKEN else None
 app = Flask(__name__)
 
 # Estados da Conversa Passo a Passo
-ASK_IMAGE = 1
-ASK_TITLE = 2
-ASK_OLD_PRICE = 3
-ASK_PRICE = 4
-ASK_CHANNEL = 5
+SELECTING_PLATFORM = 0
+ML_ASK_LINK = 1
+SHOPEE_ASK_LINK = 2
+ASK_IMAGE = 3
+ASK_TITLE = 4
+ASK_OLD_PRICE = 5
+ASK_PRICE = 6
+ASK_CHANNEL = 7
+
+# --- INTEGRAÇÃO COM MERCADO LIVRE (100% Automático via Scraping) ---
+def get_mercadolibre_product_info(product_url):
+    title = None
+    image_url = None
+    price_str = None
+    link = product_url
+
+    try:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+        }
+        resp = curl_requests.get(product_url, headers=headers, impersonate="chrome120", timeout=10)
+        if resp.status_code == 200:
+            html = resp.text
+            
+            # Extrai o Título pelas Meta Tags Open Graph
+            match_title = re.search(r'<meta property="og:title" content="([^"]+)"', html)
+            if match_title:
+                title = match_title.group(1)
+
+            # Extrai a Imagem pelas Meta Tags Open Graph
+            match_img = re.search(r'<meta property="og:image" content="([^"]+)"', html)
+            if match_img:
+                image_url = match_img.group(1)
+
+            # Extrai o Preço (busca padrão de itemprop ou dados estruturados da página)
+            match_price = re.search(r'<meta itemprop="price" content="([0-9.]+)"', html)
+            if match_price:
+                p_val = float(match_price.group(1))
+                price_str = f"R$ {p_val:.2f}".replace('.', ',')
+    except Exception as e:
+        print(f"⚠️ Erro ao extrair dados do Mercado Livre: {e}")
+
+    return {
+        "title": title,
+        "image": image_url,
+        "price": price_str,
+        "link": link
+    }
 
 # --- INTEGRAÇÃO COM A API DA SHOPEE ---
 def generate_shopee_signature(app_id, secret, payload, timestamp):
@@ -106,7 +150,7 @@ def get_shopee_product_info(product_url):
         "link": short_link or final_url
     }
 
-# --- GERADOR DE CARD / IMAGEM (Limpo, 100% preenchido) ---
+# --- GERADOR DE CARD / IMAGEM ---
 def generate_card_image(image_source):
     prod_img = None
     if image_source:
@@ -142,7 +186,7 @@ def generate_card_image(image_source):
         card.paste(prod_img, (0, 0), prod_img if prod_img.mode == 'RGBA' else None)
     else:
         draw.rectangle([(0, 0), (canvas_width, canvas_height)], fill="#FFF0EE")
-        draw.text((320, 440), "📦 PRODUTO SHOPEE", fill="#EE4D2D")
+        draw.text((320, 440), "📦 PRODUTO OFERTA", fill="#EE4D2D")
 
     output_stream = BytesIO()
     card.convert("RGB").save(output_stream, format="JPEG")
@@ -161,20 +205,72 @@ async def verify_bot_admin(bot, chat_id):
 
 # --- FLUXO DO BOT ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    keyboard = [
+        [InlineKeyboardButton("🟡 Mercado Livre (100% Automático)", callback_data="plat_ml")],
+        [InlineKeyboardButton("🟠 Shopee (Modo Manual/Misto)", callback_data="plat_shopee")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
     await update.message.reply_text(
-        "✔️ **Bem-vindo ao Bot de Afiliados Shopee!**\n\n"
-        "Envie o link de um produto da Shopee para começarmos.",
-        parse_mode="Markdown"
+        "✔️ **Seja bem-vindo ao Bot de Afiliados Automatizado!**\n\n"
+        "Por favor, escolha abaixo em qual plataforma deseja gerar o anúncio automático:",
+        parse_mode="Markdown",
+        reply_markup=reply_markup
     )
-    return ConversationHandler.END
+    return SELECTING_PLATFORM
 
-async def process_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def platform_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    if query.data == "plat_ml":
+        context.user_data["platform"] = "mercadolivre"
+        await query.message.reply_text(
+            "🟡 **Mercado Livre selecionado!**\n\n"
+            "Envie o link do produto do Mercado Livre para extrairmos tudo automaticamente:",
+            parse_mode="Markdown"
+        )
+        return ML_ASK_LINK
+    else:
+        context.user_data["platform"] = "shopee"
+        await query.message.reply_text(
+            "🟠 **Shopee selecionado (Modo Manual/Misto)!**\n\n"
+            "Envie o link do produto da Shopee:",
+            parse_mode="Markdown"
+        )
+        return SHOPEE_ASK_LINK
+
+# Fluxo Mercado Livre
+async def process_ml_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
+    if not text or ("mercadolivre" not in text.lower() and "mercadopago" not in text.lower() and "mercadolivre.com" not in text.lower()):
+        await update.message.reply_text("⚠️ Por favor, envie um link válido do Mercado Livre.")
+        return ML_ASK_LINK
+
+    await update.message.reply_text("🔍 Extraindo informações do Mercado Livre automaticamente...")
+    info = get_mercadolibre_product_info(text)
+
+    context.user_data["title"] = info["title"] or "Produto Mercado Livre"
+    context.user_data["image_source"] = info["image"]
+    context.user_data["price"] = info["price"] or "R$ 0,00"
+    context.user_data["old_price"] = "R$ 0,00"
+    context.user_data["link"] = info["link"]
+
+    if not info["image"]:
+        await update.message.reply_text("⚠️ Não conseguimos puxar a foto automaticamente. Envie a foto do produto:", parse_mode="Markdown")
+        return ASK_IMAGE
+
+    await update.message.reply_text("📢 Envie o **ID ou Username do canal/grupo** de destino:", parse_mode="Markdown")
+    return ASK_CHANNEL
+
+# Fluxo Shopee
+async def process_shopee_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     if not text or "shopee" not in text.lower():
         await update.message.reply_text("Por favor, envie um link válido da Shopee.")
-        return ConversationHandler.END
+        return SHOPEE_ASK_LINK
 
-    await update.message.reply_text("🔍 A analisar o link...")
+    await update.message.reply_text("🔍 Analisando link da Shopee...")
     product_info = get_shopee_product_info(text)
 
     context.user_data["link"] = product_info["link"]
@@ -183,34 +279,14 @@ async def process_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["image_source"] = product_info["image"]
 
     if not product_info["image"]:
-        await update.message.reply_text(
-            "⚠️ Não foi possível detetar a imagem automaticamente.\n\n"
-            "📸 Envie a foto (JPG/PNG) do produto:",
-            parse_mode="Markdown"
-        )
+        await update.message.reply_text("📸 Não foi possível detectar a imagem. Envie a foto do produto:", parse_mode="Markdown")
         return ASK_IMAGE
 
     if not product_info["title"]:
-        await update.message.reply_text(
-            "⚠️ Não foi possível detetar o título automaticamente.\n\n"
-            "📝 Digite e envie o **título do produto**:",
-            parse_mode="Markdown"
-        )
+        await update.message.reply_text("📝 Digite e envie o **título do produto**:", parse_mode="Markdown")
         return ASK_TITLE
 
-    if not product_info["price"]:
-        await update.message.reply_text(
-            "⚠️ Não foi possível detetar o preço automaticamente.\n\n"
-            "❌ Digite e envie o **Preço Antigo** (ex: `R$ 49,90`):",
-            parse_mode="Markdown"
-        )
-        return ASK_OLD_PRICE
-
-    # Se já tem o preço atual, mas queremos garantir o antigo customizado, pedimos o antigo também
-    await update.message.reply_text(
-        "❌ Digite e envie o **Preço Antigo** do produto (ex: `R$ 49,90`):",
-        parse_mode="Markdown"
-    )
+    await update.message.reply_text("❌ Digite e envie o **Preço Antigo** (ex: `R$ 49,90`):", parse_mode="Markdown")
     return ASK_OLD_PRICE
 
 async def receive_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -222,31 +298,26 @@ async def receive_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
     image_bytes = await photo_file.download_as_bytearray()
     context.user_data["image_source"] = image_bytes
 
+    if context.user_data.get("platform") == "mercadolivre":
+        await update.message.reply_text("📢 Envie o **ID ou Username do canal/grupo** de destino:", parse_mode="Markdown")
+        return ASK_CHANNEL
+
     if not context.user_data.get("title"):
         await update.message.reply_text("📝 Agora digite e envie o **título do produto**:", parse_mode="Markdown")
         return ASK_TITLE
     
-    if not context.user_data.get("old_price"):
-        await update.message.reply_text("❌ Agora digite e envie o **Preço Antigo** (ex: `R$ 49,90`):", parse_mode="Markdown")
-        return ASK_OLD_PRICE
-
-    await update.message.reply_text("📢 Envie o **ID ou Username do canal/grupo** de destino:", parse_mode="Markdown")
-    return ASK_CHANNEL
+    await update.message.reply_text("❌ Agora digite e envie o **Preço Antigo** (ex: `R$ 49,90`):", parse_mode="Markdown")
+    return ASK_OLD_PRICE
 
 async def receive_title(update: Update, context: ContextTypes.DEFAULT_TYPE):
     title = update.message.text
     if not title:
-        await update.message.reply_text("⚠️ Por favor, envie um título válido em texto:")
+        await update.message.reply_text("⚠️ Por favor, envie um título válido:")
         return ASK_TITLE
 
     context.user_data["title"] = title
-
-    if not context.user_data.get("old_price"):
-        await update.message.reply_text("❌ Agora digite e envie o **Preço Antigo** (ex: `R$ 49,90`):", parse_mode="Markdown")
-        return ASK_OLD_PRICE
-
-    await update.message.reply_text("📢 Envie o **ID ou Username do canal/grupo** de destino:", parse_mode="Markdown")
-    return ASK_CHANNEL
+    await update.message.reply_text("❌ Agora digite e envie o **Preço Antigo** (ex: `R$ 49,90`):", parse_mode="Markdown")
+    return ASK_OLD_PRICE
 
 async def receive_old_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
     old_price = update.message.text.strip()
@@ -260,10 +331,7 @@ async def receive_old_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("💰 Agora digite e envie o **Preço Atual (Por)** (ex: `R$ 12,99`):", parse_mode="Markdown")
         return ASK_PRICE
 
-    await update.message.reply_text(
-        "📢 Envie o **ID ou Username do canal/grupo** de destino (ex: `@seu_canal` ou `-100123456789`):",
-        parse_mode="Markdown"
-    )
+    await update.message.reply_text("📢 Envie o **ID ou Username do canal/grupo** de destino:", parse_mode="Markdown")
     return ASK_CHANNEL
 
 async def receive_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -273,29 +341,24 @@ async def receive_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ASK_PRICE
 
     context.user_data["price"] = price
-
-    await update.message.reply_text(
-        "✅ Preços guardados com sucesso!\n\n"
-        "📢 Envie o **ID ou Username do canal/grupo** de destino (ex: `@seu_canal` ou `-100123456789`):",
-        parse_mode="Markdown"
-    )
+    await update.message.reply_text("📢 Envie o **ID ou Username do canal/grupo** de destino:", parse_mode="Markdown")
     return ASK_CHANNEL
 
 async def receive_channel_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
     target_channel = update.message.text.strip()
     
-    await update.message.reply_text("🔍 A verificar permissões de Administrador...")
+    await update.message.reply_text("🔍 Verificando permissões de Administrador...")
     is_admin = await verify_bot_admin(context.bot, target_channel)
 
     if not is_admin:
         await update.message.reply_text(
             f"❌ O bot **não é Administrador** no destino `{target_channel}`.\n\n"
-            "Certifique-se de que adicionou o bot como ADM e tente enviar o ID/Username novamente:",
+            "Adicione o bot como ADM e tente enviar o ID/Username novamente:",
             parse_mode="Markdown"
         )
         return ASK_CHANNEL
 
-    title = context.user_data.get("title", "🔥 Super Achadinho Shopee")
+    title = context.user_data.get("title", "🔥 Super Oferta")
     old_price = context.user_data.get("old_price", "R$ 0,00")
     price = context.user_data.get("price", "R$ 0,00")
     link = context.user_data.get("link")
@@ -303,16 +366,21 @@ async def receive_channel_and_send(update: Update, context: ContextTypes.DEFAULT
 
     card_img = generate_card_image(img_src)
     
-    # Legenda customizada com o preço antigo informado por si
-    caption = (
-        f"🛒 *{title}*\n\n"
-        f"❌ De: {old_price}\n\n"
-        f"💲 Por: {price}\n\n"
-        f"⭐ Avaliação: 4.8 / 5.0\n\n"
-        f"🔥 Oferta por tempo limitado!"
-    )
+    # Se for Mercado Livre e não houver preço antigo marcado, oculta a linha "De:"
+    if context.user_data.get("platform") == "mercadolivre" or old_price == "R$ 0,00":
+        caption = (
+            f"🛒 *{title}*\n\n"
+            f"✅ *Por: {price}*\n\n"
+            f"🔥 *Oferta imperdível no Mercado Livre!*"
+        )
+    else:
+        caption = (
+            f"🛒 *{title}*\n\n"
+            f"❌ De: {old_price}\n\n"
+            f"✅ *Por: {price}*\n\n"
+            f"🔥 *Oferta por tempo limitado!*"
+        )
 
-    # Botão Inline de Comprar Agora
     keyboard = [[InlineKeyboardButton("COMPRAR AGORA 🔥", url=link)]]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
@@ -357,7 +425,7 @@ def run_flask():
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
 
-# --- INICIALIZAÇÃO PRINCIPAL DO BOT (LONG POLLING) ---
+# --- INICIALIZAÇÃO PRINCIPAL DO BOT ---
 def main():
     import threading
     flask_thread = threading.Thread(target=run_flask)
@@ -367,8 +435,11 @@ def main():
     application = Application.builder().token(TELEGRAM_TOKEN).build()
     
     conv_handler = ConversationHandler(
-        entry_points=[MessageHandler(filters.TEXT & ~filters.COMMAND, process_link)],
+        entry_points=[CommandHandler("start", start)],
         states={
+            SELECTING_PLATFORM: [CallbackQueryHandler(platform_callback)],
+            ML_ASK_LINK: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_ml_link)],
+            SHOPEE_ASK_LINK: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_shopee_link)],
             ASK_IMAGE: [MessageHandler(filters.PHOTO, receive_image)],
             ASK_TITLE: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_title)],
             ASK_OLD_PRICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_old_price)],
@@ -378,10 +449,9 @@ def main():
         fallbacks=[CommandHandler("cancel", cancel)],
     )
 
-    application.add_handler(CommandHandler("start", start))
     application.add_handler(conv_handler)
 
-    print("🤖 Bot iniciado com sucesso no Render via Long Polling...")
+    print("🤖 Bot integrado (Shopee + Mercado Livre) iniciado com sucesso no Render...")
     application.run_polling()
 
 if __name__ == "__main__":
