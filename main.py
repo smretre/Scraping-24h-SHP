@@ -30,13 +30,15 @@ app = Flask(__name__)
 SELECTING_PLATFORM = 0
 ML_ASK_LINK = 1
 SHOPEE_ASK_LINK = 2
-ASK_IMAGE = 3
-ASK_TITLE = 4
-ASK_OLD_PRICE = 5
-ASK_PRICE = 6
-ASK_CHANNEL = 7
+TEMU_ASK_LINK = 3
+SHEIN_ASK_LINK = 4
+ASK_IMAGE = 5
+ASK_TITLE = 6
+ASK_OLD_PRICE = 7
+ASK_PRICE = 8
+ASK_CHANNEL = 9
 
-# --- INTEGRAÇÃO COM MERCADO LIVRE (100% Automático via Scraping com suporte a meli.la e múltiplos seletores de preço) ---
+# --- INTEGRAÇÃO COM MERCADO LIVRE ---
 def get_mercadolibre_product_info(product_url):
     title = None
     image_url = None
@@ -48,30 +50,25 @@ def get_mercadolibre_product_info(product_url):
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
         }
-        # allow_redirects=True permite seguir links encurtados como meli.la até o produto final
         resp = curl_requests.get(product_url, headers=headers, impersonate="chrome120", allow_redirects=True, timeout=10)
         final_link = resp.url
         
         if resp.status_code == 200:
             html = resp.text
             
-            # 1. Extrai o Título pelas Meta Tags Open Graph
             match_title = re.search(r'<meta property="og:title" content="([^"]+)"', html)
             if match_title:
                 title = match_title.group(1)
 
-            # 2. Extrai a Imagem pelas Meta Tags Open Graph
             match_img = re.search(r'<meta property="og:image" content="([^"]+)"', html)
             if match_img:
                 image_url = match_img.group(1)
 
-            # 3. Extrai o Preço (Tentativa A: Meta tag itemprop padrão)
             match_price = re.search(r'<meta itemprop="price" content="([0-9.]+)"', html)
             if match_price:
                 p_val = float(match_price.group(1))
                 price_str = f"R$ {p_val:.2f}".replace('.', ',')
             
-            # Tentativa B: Busca por classes nativas de preço do Mercado Livre (ex: andes-money-amount__fraction)
             if not price_str:
                 match_fraction = re.search(r'class="andes-money-amount__fraction"[^>]*>([0-9.]+)</span>', html)
                 if match_fraction:
@@ -82,7 +79,6 @@ def get_mercadolibre_product_info(product_url):
                     p_val = float(f"{fraction_val}.{cents_val}")
                     price_str = f"R$ {p_val:.2f}".replace('.', ',')
 
-            # Tentativa C: JSON-LD estruturado da página
             if not price_str:
                 match_json_price = re.search(r'"price":\s*"?([0-9.]+)"?', html)
                 if match_json_price:
@@ -127,7 +123,6 @@ def get_shopee_product_info(product_url):
         try:
             timestamp = int(time.time())
             
-            # 1. Gerar Link de Afiliado Curto
             mutation = 'mutation GenerateLink($originUrl: String!) { generateShortLink(input: { originUrl:$originUrl }) { shortLink } }'
             payload_link = json.dumps({"query": mutation, "variables": {"originUrl": final_url}})
             sig_link = generate_shopee_signature(SHOPEE_APP_ID, SHOPEE_SECRET, payload_link, timestamp)
@@ -142,7 +137,6 @@ def get_shopee_product_info(product_url):
                 data_link = resp_link.json().get("data", {}).get("generateShortLink", {})
                 short_link = data_link.get("shortLink")
 
-            # 2. Obter Detalhes do Produto via API GraphQL
             slug_match = re.search(r'shopee\.com\.br/([^/?#]+)', final_url)
             if slug_match:
                 raw_slug = slug_match.group(1)
@@ -172,7 +166,91 @@ def get_shopee_product_info(product_url):
         "link": short_link or final_url
     }
 
-# --- GERADOR DE CARD / IMAGEM (Ajustado para mostrar o produto inteiro sem cortes) ---
+# --- INTEGRAÇÃO COM A TEMU ---
+def get_temu_product_info(product_url):
+    title = None
+    image_url = None
+    price_str = None
+    final_link = product_url
+
+    try:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+        }
+        resp = curl_requests.get(product_url, headers=headers, impersonate="chrome120", allow_redirects=True, timeout=10)
+        final_link = resp.url
+        
+        if resp.status_code == 200:
+            html = resp.text
+            
+            match_title = re.search(r'<meta property="og:title" content="([^"]+)"', html)
+            if match_title:
+                title = match_title.group(1)
+
+            match_img = re.search(r'<meta property="og:image" content="([^"]+)"', html)
+            if match_img:
+                image_url = match_img.group(1)
+
+            match_price = re.search(r'"price":\s*"([0-9.]+)"', html) or re.search(r'"price":\s*([0-9.]+)', html)
+            if match_price:
+                p_val = float(match_price.group(1))
+                price_str = f"R$ {p_val:.2f}".replace('.', ',')
+    except Exception as e:
+        print(f"⚠️ Erro ao extrair dados da Temu: {e}")
+
+    return {
+        "title": title,
+        "image": image_url,
+        "price": price_str,
+        "link": final_link
+    }
+
+# --- INTEGRAÇÃO COM A SHEIN ---
+def get_shein_product_info(product_url):
+    title = None
+    image_url = None
+    price_str = None
+    final_link = product_url
+
+    try:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+        }
+        resp = curl_requests.get(product_url, headers=headers, impersonate="chrome120", allow_redirects=True, timeout=10)
+        final_link = resp.url
+        
+        if resp.status_code == 200:
+            html = resp.text
+            
+            match_title = re.search(r'<meta property="og:title" content="([^"]+)"', html)
+            if match_title:
+                title = match_title.group(1)
+
+            match_img = re.search(r'<meta property="og:image" content="([^"]+)"', html)
+            if match_img:
+                image_url = match_img.group(1)
+
+            match_price = re.search(r'class="country-price"[^>]*>.*?R\$\s*([0-9.,]+)', html, re.DOTALL)
+            if match_price:
+                price_str = f"R$ {match_price.group(1)}"
+            else:
+                match_json_price = re.search(r'"retailPrice":\s*\{\s*"amount":\s*"([0-9.]+)"', html)
+                if match_json_price:
+                    p_val = float(match_json_price.group(1))
+                    price_str = f"R$ {p_val:.2f}".replace('.', ',')
+    except Exception as e:
+        print(f"⚠️ Erro ao extrair dados da Shein: {e}")
+
+    return {
+        "title": title,
+        "image": image_url,
+        "price": price_str,
+        "link": final_link
+    }
+
+# --- GERADOR DE CARD / IMAGEM ---
 def generate_card_image(image_source):
     prod_img = None
     if image_source:
@@ -193,14 +271,12 @@ def generate_card_image(image_source):
 
     if prod_img:
         img_w, img_h = prod_img.size
-        # Redimensionamento proporcional para exibir o produto inteiro
         ratio = min(canvas_width / img_w, canvas_height / img_h)
         new_w = int(img_w * ratio)
         new_h = int(img_h * ratio)
         
         prod_img = prod_img.resize((new_w, new_h), Image.Resampling.LANCZOS)
         
-        # Centraliza perfeitamente no quadrado
         left = (canvas_width - new_w) // 2
         top = (canvas_height - new_h) // 2
         
@@ -227,14 +303,16 @@ async def verify_bot_admin(bot, chat_id):
 # --- FLUXO DO BOT ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
-        [InlineKeyboardButton("🟡 Mercado Livre (100% Automático)", callback_data="plat_ml")],
-        [InlineKeyboardButton("🟠 Shopee (Modo Manual/Misto)", callback_data="plat_shopee")]
+        [InlineKeyboardButton("🟡 Mercado Livre", callback_data="plat_ml"),
+         InlineKeyboardButton("🟠 Shopee", callback_data="plat_shopee")],
+        [InlineKeyboardButton("🔴 Temu", callback_data="plat_temu"),
+         InlineKeyboardButton("🟣 Shein", callback_data="plat_shein")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
     await update.message.reply_text(
         "✔️ **Seja bem-vindo ao Bot de Afiliados Automatizado!**\n\n"
-        "Por favor, escolha abaixo em qual plataforma deseja gerar o anúncio automático:",
+        "Por favor, escolha abaixo em qual plataforma deseja gerar o anúncio:",
         parse_mode="Markdown",
         reply_markup=reply_markup
     )
@@ -246,36 +324,28 @@ async def platform_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if query.data == "plat_ml":
         context.user_data["platform"] = "mercadolivre"
-        await query.message.reply_text(
-            "🟡 **Mercado Livre selecionado!**\n\n"
-            "Envie o link do produto do Mercado Livre (ou encurtado meli.la) para extrairmos tudo automaticamente:",
-            parse_mode="Markdown"
-        )
+        await query.message.reply_text("🟡 **Mercado Livre selecionado!**\n\nEnvie o link do produto:", parse_mode="Markdown")
         return ML_ASK_LINK
-    else:
+    elif query.data == "plat_shopee":
         context.user_data["platform"] = "shopee"
-        await query.message.reply_text(
-            "🟠 **Shopee selecionado (Modo Manual/Misto)!**\n\n"
-            "Envie o link do produto da Shopee:",
-            parse_mode="Markdown"
-        )
+        await query.message.reply_text("🟠 **Shopee selecionado!**\n\nEnvie o link do produto da Shopee:", parse_mode="Markdown")
         return SHOPEE_ASK_LINK
+    elif query.data == "plat_temu":
+        context.user_data["platform"] = "temu"
+        await query.message.reply_text("🔴 **Temu selecionado!**\n\nEnvie o link do produto da Temu:", parse_mode="Markdown")
+        return TEMU_ASK_LINK
+    elif query.data == "plat_shein":
+        context.user_data["platform"] = "shein"
+        await query.message.reply_text("🟣 **Shein selecionado!**\n\nEnvie o link do produto da Shein:", parse_mode="Markdown")
+        return SHEIN_ASK_LINK
 
-# Fluxo Mercado Livre atualizado para aceitar meli.la e pedir o preço antigo opcional
+# Processar Mercado Livre
 async def process_ml_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     if not text:
-        await update.message.reply_text("⚠️ Por favor, envie um link válido.")
         return ML_ASK_LINK
 
-    termos_aceitos = ["mercadolivre", "mercadopago", "meli.la", "mercadolivre.com", "mercadolivre.com.br"]
-    eh_valido = any(termo in text.lower() for termo in termos_aceitos)
-
-    if not eh_valido:
-        await update.message.reply_text("⚠️ O bot não reconheceu este como um link válido do Mercado Livre. Tente enviar novamente:")
-        return ML_ASK_LINK
-
-    await update.message.reply_text("🔍 Extraindo informações do Mercado Livre automaticamente...")
+    await update.message.reply_text("🔍 Extraindo informações do Mercado Livre...")
     info = get_mercadolibre_product_info(text)
 
     context.user_data["title"] = info["title"] or "Produto Mercado Livre"
@@ -284,32 +354,28 @@ async def process_ml_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["link"] = info["link"]
 
     if not info["image"]:
-        await update.message.reply_text("⚠️ Não conseguimos puxar a foto automaticamente. Envie a foto do produto:", parse_mode="Markdown")
+        await update.message.reply_text("⚠️ Não conseguimos puxar a foto automaticamente. Envie a foto do produto:")
         return ASK_IMAGE
 
-    await update.message.reply_text(
-        "❌ Digite e envie o **Preço Antigo** (ex: `R$ 2999,00` ou digite `0` se não tiver):", 
-        parse_mode="Markdown"
-    )
+    await update.message.reply_text("❌ Digite e envie o **Preço Antigo** (ex: `R$ 299,00` ou `0` se não tiver):", parse_mode="Markdown")
     return ASK_OLD_PRICE
 
-# Fluxo Shopee
+# Processar Shopee
 async def process_shopee_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
-    if not text or "shopee" not in text.lower():
-        await update.message.reply_text("Por favor, envie um link válido da Shopee.")
+    if not text:
         return SHOPEE_ASK_LINK
 
     await update.message.reply_text("🔍 Analisando link da Shopee...")
     product_info = get_shopee_product_info(text)
 
     context.user_data["link"] = product_info["link"]
-    context.user_data["price"] = product_info["price"]
+    context.user_data["price"] = product_info["price"] or "R$ 0,00"
     context.user_data["title"] = product_info["title"]
     context.user_data["image_source"] = product_info["image"]
 
     if not product_info["image"]:
-        await update.message.reply_text("📸 Não foi possível detectar a imagem. Envie a foto do produto:", parse_mode="Markdown")
+        await update.message.reply_text("📸 Não foi possível detectar a imagem. Envie a foto do produto:")
         return ASK_IMAGE
 
     if not product_info["title"]:
@@ -317,6 +383,48 @@ async def process_shopee_link(update: Update, context: ContextTypes.DEFAULT_TYPE
         return ASK_TITLE
 
     await update.message.reply_text("❌ Digite e envie o **Preço Antigo** (ex: `R$ 49,90`):", parse_mode="Markdown")
+    return ASK_OLD_PRICE
+
+# Processar Temu
+async def process_temu_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
+    if not text:
+        return TEMU_ASK_LINK
+
+    await update.message.reply_text("🔍 Extraindo informações da Temu...")
+    info = get_temu_product_info(text)
+
+    context.user_data["title"] = info["title"] or "Produto Temu"
+    context.user_data["image_source"] = info["image"]
+    context.user_data["price"] = info["price"] or "R$ 0,00"
+    context.user_data["link"] = info["link"]
+
+    if not info["image"]:
+        await update.message.reply_text("⚠️ Não conseguimos puxar a foto automaticamente. Envie a foto do produto:")
+        return ASK_IMAGE
+
+    await update.message.reply_text("❌ Digite e envie o **Preço Antigo** (ex: `R$ 150,00` ou `0` se não tiver):", parse_mode="Markdown")
+    return ASK_OLD_PRICE
+
+# Processar Shein
+async def process_shein_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
+    if not text:
+        return SHEIN_ASK_LINK
+
+    await update.message.reply_text("🔍 Extraindo informações da Shein...")
+    info = get_shein_product_info(text)
+
+    context.user_data["title"] = info["title"] or "Produto Shein"
+    context.user_data["image_source"] = info["image"]
+    context.user_data["price"] = info["price"] or "R$ 0,00"
+    context.user_data["link"] = info["link"]
+
+    if not info["image"]:
+        await update.message.reply_text("⚠️ Não conseguimos puxar a foto automaticamente. Envie a foto do produto:")
+        return ASK_IMAGE
+
+    await update.message.reply_text("❌ Digite e envie o **Preço Antigo** (ex: `R$ 120,00` ou `0` se não tiver):", parse_mode="Markdown")
     return ASK_OLD_PRICE
 
 async def receive_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -353,7 +461,7 @@ async def receive_old_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     context.user_data["old_price"] = old_price
 
-    if not context.user_data.get("price"):
+    if not context.user_data.get("price") or context.user_data.get("price") == "R$ 0,00":
         await update.message.reply_text("💰 Agora digite e envie o **Preço Atual (Por)** (ex: `R$ 12,99`):", parse_mode="Markdown")
         return ASK_PRICE
 
@@ -392,7 +500,6 @@ async def receive_channel_and_send(update: Update, context: ContextTypes.DEFAULT
 
     card_img = generate_card_image(img_src)
     
-    # Exibe o preço antigo se ele foi informado e for diferente de 0/vazio
     if not old_price or old_price in ["0", "R$ 0", "R$ 0,00"]:
         caption = (
             f"🛒 *{title}*\n\n"
@@ -466,6 +573,8 @@ def main():
             SELECTING_PLATFORM: [CallbackQueryHandler(platform_callback)],
             ML_ASK_LINK: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_ml_link)],
             SHOPEE_ASK_LINK: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_shopee_link)],
+            TEMU_ASK_LINK: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_temu_link)],
+            SHEIN_ASK_LINK: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_shein_link)],
             ASK_IMAGE: [MessageHandler(filters.PHOTO, receive_image)],
             ASK_TITLE: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_title)],
             ASK_OLD_PRICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_old_price)],
@@ -477,7 +586,7 @@ def main():
 
     application.add_handler(conv_handler)
 
-    print("🤖 Bot integrado (Shopee + Mercado Livre) iniciado com sucesso no Render...")
+    print("🤖 Bot multiplataforma (Mercado Livre, Shopee, Temu e Shein) iniciado com sucesso no Render...")
     application.run_polling()
 
 if __name__ == "__main__":
