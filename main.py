@@ -5,7 +5,7 @@ import hashlib
 import json
 from flask import Flask, request, jsonify
 import mercadopago
-from PIL import Image, ImageDraw, ImageOps, ImageFilter
+from PIL import Image, ImageDraw, ImageFilter
 from io import BytesIO
 from telegram import Update, ChatMember, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import (
@@ -38,7 +38,7 @@ ASK_OLD_PRICE = 7
 ASK_PRICE = 8
 ASK_CHANNEL = 9
 TEMU_ASK_PRICE = 10 
-TEMU_ASK_TITLE = 11  # Novo estado caso o título da Temu precise ser digitado manualmente
+TEMU_ASK_TITLE = 11
 
 # --- INTEGRAÇÃO COM MERCADO LIVRE ---
 def get_mercadolibre_product_info(product_url):
@@ -168,7 +168,7 @@ def get_shopee_product_info(product_url):
         "link": short_link or final_url
     }
 
-# --- INTEGRAÇÃO COM A TEMU (Aprimorada para extrair título real) ---
+# --- INTEGRAÇÃO COM A TEMU ---
 def get_temu_product_info(product_url):
     title = None
     image_url = None
@@ -186,7 +186,6 @@ def get_temu_product_info(product_url):
         if resp.status_code == 200:
             html = resp.text
             
-            # Tenta pegar og:title ou title padrão da aba
             match_title = re.search(r'<meta property="og:title" content="([^"]+)"', html)
             if match_title:
                 title = match_title.group(1)
@@ -199,10 +198,8 @@ def get_temu_product_info(product_url):
             if match_img:
                 image_url = match_img.group(1)
 
-            # Procura por preços realistas no padrão brasileiro (ex: R$ 26,87) evitando valores inflados de cupons ou fretes
             prices = re.findall(r'R\$\s*([0-9]+[.,][0-9]{2})', html)
             if prices:
-                # Pega o menor preço plausível encontrado na página para evitar pegar valores totais falsos
                 valid_prices = [float(p.replace('.', '').replace(',', '.')) for p in prices if float(p.replace('.', '').replace(',', '.')) < 1000]
                 if valid_prices:
                     p_val = min(valid_prices)
@@ -268,8 +265,8 @@ def get_shein_product_info(product_url):
         "link": final_link
     }
 
-# --- GERADOR DE CARD / IMAGEM ---
-def generate_card_image(image_source):
+# --- GERADOR DE CARD / IMAGEM (Com Blur apenas para Temu e Shein) ---
+def generate_card_image(image_source, platform="mercadolivre"):
     prod_img = None
     if image_source:
         try:
@@ -288,31 +285,34 @@ def generate_card_image(image_source):
     draw = ImageDraw.Draw(card)
 
     if prod_img:
-        bg_img = prod_img.copy()
-        bg_w, bg_h = bg_img.size
-        bg_ratio = max(canvas_width / bg_w, canvas_height / bg_h)
-        bg_new_w = int(bg_w * bg_ratio)
-        bg_new_h = int(bg_h * bg_ratio)
-        bg_img = bg_img.resize((bg_new_w, bg_new_h), Image.Resampling.LANCZOS)
-        
-        bg_left = (bg_new_w - canvas_width) // 2
-        bg_top = (bg_new_h - canvas_height) // 2
-        bg_img = bg_img.crop((bg_left, bg_top, bg_left + canvas_width, bg_top + canvas_height))
-        
-        bg_img = bg_img.filter(ImageFilter.GaussianBlur(15))
-        darken = Image.new("RGBA", (canvas_width, canvas_height), (0, 0, 0, 90))
-        bg_img.alpha_composite(darken)
-        card.paste(bg_img, (0, 0))
+        # Se for Temu ou Shein, aplica o fundo com desfoque (Blur)
+        if platform in ["temu", "shein"]:
+            bg_img = prod_img.copy()
+            bg_w, bg_h = bg_img.size
+            bg_ratio = max(canvas_width / bg_w, canvas_height / bg_h)
+            bg_new_w = int(bg_w * bg_ratio)
+            bg_new_h = int(bg_h * bg_ratio)
+            bg_img = bg_img.resize((bg_new_w, bg_new_h), Image.Resampling.LANCZOS)
+            
+            bg_left = (bg_new_w - canvas_width) // 2
+            bg_top = (bg_new_h - canvas_height) // 2
+            bg_img = bg_img.crop((bg_left, bg_top, bg_left + canvas_width, bg_top + canvas_height))
+            
+            bg_img = bg_img.filter(ImageFilter.GaussianBlur(15))
+            darken = Image.new("RGBA", (canvas_width, canvas_height), (0, 0, 0, 90))
+            bg_img.alpha_composite(darken)
+            card.paste(bg_img, (0, 0))
 
+        # Renderização do produto principal por inteiro e centralizado para todas as plataformas
         img_w, img_h = prod_img.size
-        fg_ratio = min(canvas_width / img_w, canvas_height / img_h)
-        fg_new_w = int(img_w * fg_ratio)
-        fg_new_h = int(img_h * fg_ratio)
+        ratio = min(canvas_width / img_w, canvas_height / img_h)
+        new_w = int(img_w * ratio)
+        new_h = int(img_h * ratio)
         
-        prod_img = prod_img.resize((fg_new_w, fg_new_h), Image.Resampling.LANCZOS)
+        prod_img = prod_img.resize((new_w, new_h), Image.Resampling.LANCZOS)
         
-        left = (canvas_width - fg_new_w) // 2
-        top = (canvas_height - fg_new_h) // 2
+        left = (canvas_width - new_w) // 2
+        top = (canvas_height - new_h) // 2
         
         card.paste(prod_img, (left, top), prod_img if prod_img.mode == 'RGBA' else None)
     else:
@@ -427,7 +427,7 @@ async def process_shopee_link(update: Update, context: ContextTypes.DEFAULT_TYPE
     await update.message.reply_text(f"💰 Preço detectado: `{product_info['price']}`\n\n❌ Digite e envie o **Preço Antigo** (ou `0` se não tiver):", parse_mode="Markdown")
     return ASK_OLD_PRICE
 
-# Processar Temu (com verificação inteligente de título e preço)
+# Processar Temu
 async def process_temu_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     if not text:
@@ -445,7 +445,6 @@ async def process_temu_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ Não conseguimos puxar a foto automaticamente. Envie a foto do produto:")
         return ASK_IMAGE
 
-    # Se o título não foi capturado corretamente, pede para o usuário digitar
     if not info["title"]:
         await update.message.reply_text(
             "⚠️ Não conseguimos extrair o título automaticamente da Temu.\n\n"
@@ -593,8 +592,9 @@ async def receive_channel_and_send(update: Update, context: ContextTypes.DEFAULT
     price = context.user_data.get("price", "R$ 0,00")
     link = context.user_data.get("link")
     img_src = context.user_data.get("image_source")
+    platform = context.user_data.get("platform", "mercadolivre")
 
-    card_img = generate_card_image(img_src)
+    card_img = generate_card_image(img_src, platform=platform)
     
     if not old_price or old_price in ["0", "R$ 0", "R$ 0,00"]:
         caption = (
