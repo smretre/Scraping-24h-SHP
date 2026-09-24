@@ -172,7 +172,7 @@ def get_shopee_product_info(product_url):
         "link": short_link or final_url
     }
 
-# --- GERADOR DE CARD / IMAGEM ---
+# --- GERADOR DE CARD / IMAGEM (Ajustado para mostrar o produto inteiro sem cortes) ---
 def generate_card_image(image_source):
     prod_img = None
     if image_source:
@@ -193,19 +193,18 @@ def generate_card_image(image_source):
 
     if prod_img:
         img_w, img_h = prod_img.size
-        ratio = max(canvas_width / img_w, canvas_height / img_h)
+        # Redimensionamento proporcional para exibir o produto inteiro
+        ratio = min(canvas_width / img_w, canvas_height / img_h)
         new_w = int(img_w * ratio)
         new_h = int(img_h * ratio)
         
         prod_img = prod_img.resize((new_w, new_h), Image.Resampling.LANCZOS)
         
-        left = (new_w - canvas_width) // 2
-        top = (new_h - canvas_height) // 2
-        right = left + canvas_width
-        bottom = top + canvas_height
+        # Centraliza perfeitamente no quadrado
+        left = (canvas_width - new_w) // 2
+        top = (canvas_height - new_h) // 2
         
-        prod_img = prod_img.crop((left, top, right, bottom))
-        card.paste(prod_img, (0, 0), prod_img if prod_img.mode == 'RGBA' else None)
+        card.paste(prod_img, (left, top), prod_img if prod_img.mode == 'RGBA' else None)
     else:
         draw.rectangle([(0, 0), (canvas_width, canvas_height)], fill="#FFF0EE")
         draw.text((320, 440), "📦 PRODUTO OFERTA", fill="#EE4D2D")
@@ -262,7 +261,7 @@ async def platform_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return SHOPEE_ASK_LINK
 
-# Fluxo Mercado Livre atualizado para aceitar meli.la
+# Fluxo Mercado Livre atualizado para aceitar meli.la e pedir o preço antigo opcional
 async def process_ml_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     if not text:
@@ -282,15 +281,17 @@ async def process_ml_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["title"] = info["title"] or "Produto Mercado Livre"
     context.user_data["image_source"] = info["image"]
     context.user_data["price"] = info["price"] or "R$ 0,00"
-    context.user_data["old_price"] = "R$ 0,00"
     context.user_data["link"] = info["link"]
 
     if not info["image"]:
         await update.message.reply_text("⚠️ Não conseguimos puxar a foto automaticamente. Envie a foto do produto:", parse_mode="Markdown")
         return ASK_IMAGE
 
-    await update.message.reply_text("📢 Envie o **ID ou Username do canal/grupo** de destino:", parse_mode="Markdown")
-    return ASK_CHANNEL
+    await update.message.reply_text(
+        "❌ Digite e envie o **Preço Antigo** (ex: `R$ 2999,00` ou digite `0` se não tiver):", 
+        parse_mode="Markdown"
+    )
+    return ASK_OLD_PRICE
 
 # Fluxo Shopee
 async def process_shopee_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -326,10 +327,6 @@ async def receive_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
     photo_file = await update.message.photo[-1].get_file()
     image_bytes = await photo_file.download_as_bytearray()
     context.user_data["image_source"] = image_bytes
-
-    if context.user_data.get("platform") == "mercadolivre":
-        await update.message.reply_text("📢 Envie o **ID ou Username do canal/grupo** de destino:", parse_mode="Markdown")
-        return ASK_CHANNEL
 
     if not context.user_data.get("title"):
         await update.message.reply_text("📝 Agora digite e envie o **título do produto**:", parse_mode="Markdown")
@@ -395,12 +392,12 @@ async def receive_channel_and_send(update: Update, context: ContextTypes.DEFAULT
 
     card_img = generate_card_image(img_src)
     
-    # Se for Mercado Livre e não houver preço antigo marcado, oculta a linha "De:"
-    if context.user_data.get("platform") == "mercadolivre" or old_price == "R$ 0,00":
+    # Exibe o preço antigo se ele foi informado e for diferente de 0/vazio
+    if not old_price or old_price in ["0", "R$ 0", "R$ 0,00"]:
         caption = (
             f"🛒 *{title}*\n\n"
             f"✅ *Por: {price}*\n\n"
-            f"🔥 *Oferta imperdível no Mercado Livre!*"
+            f"🔥 *Oferta imperdível!*"
         )
     else:
         caption = (
