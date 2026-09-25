@@ -87,7 +87,7 @@ def get_mercadolibre_product_info(product_url):
     title = None
     image_url = None
     price_str = None
-    old_price_str = None  # Garante que começa limpo
+    old_price_str = None
     final_link = product_url
 
     try:
@@ -111,29 +111,29 @@ def get_mercadolibre_product_info(product_url):
             if match_img:
                 image_url = match_img.group(1)
 
-            # 3. Extrai o Preço Atual (Tentativa A: Meta tag itemprop padrão)
-            match_price = re.search(r'<meta itemprop="price" content="([0-9.]+)"', html)
-            if match_price:
-                p_val = float(match_price.group(1))
+            # 3. EXTRAÇÃO DO PREÇO ATUAL (Prioridade para a classe de destaque visual da oferta/Pix)
+            match_fraction = re.search(r'class="andes-money-amount__fraction"[^>]*>([0-9.]+)</span>', html)
+            if match_fraction:
+                fraction_val = match_fraction.group(1).replace('.', '')
+                
+                # Busca os centavos localmente logo após a fração para evitar apanhar das parcelas
+                sub_html = html[match_fraction.end():match_fraction.end()+80]
+                match_cents = re.search(r'class="andes-money-amount__cents"[^>]*>([0-9]+)</span>', sub_html)
+                cents_val = match_cents.group(1) if match_cents else "00"
+                
+                p_val = float(f"{fraction_val}.{cents_val}")
                 if p_val >= 10.0:
                     price_str = f"R$ {p_val:.2f}".replace('.', ',')
-            
-            # Tentativa B: Busca por classes nativas de preço do Mercado Livre com escopo local (evita centavos da parcela)
+
+            # Tentativa B: Se a classe visual falhar, recorremos ao itemprop="price"
             if not price_str:
-                match_fraction = re.search(r'class="andes-money-amount__fraction"[^>]*>([0-9.]+)</span>', html)
-                if match_fraction:
-                    fraction_val = match_fraction.group(1).replace('.', '')
-                    
-                    # Busca os centavos APENAS nos caracteres logo após a fração encontrada
-                    sub_html = html[match_fraction.end():match_fraction.end()+80]
-                    match_cents = re.search(r'class="andes-money-amount__cents"[^>]*>([0-9]+)</span>', sub_html)
-                    cents_val = match_cents.group(1) if match_cents else "00"
-                    
-                    p_val = float(f"{fraction_val}.{cents_val}")
+                match_price = re.search(r'<meta itemprop="price" content="([0-9.]+)"', html)
+                if match_price:
+                    p_val = float(match_price.group(1))
                     if p_val >= 10.0:
                         price_str = f"R$ {p_val:.2f}".replace('.', ',')
 
-            # Tentativa C: JSON-LD estruturado da página
+            # Tentativa C: JSON-LD estruturado
             if not price_str:
                 match_json_price = re.search(r'"price":\s*"?([0-9.]+)"?', html)
                 if match_json_price:
@@ -141,11 +141,9 @@ def get_mercadolibre_product_info(product_url):
                     if p_val >= 10.0:
                         price_str = f"R$ {p_val:.2f}".replace('.', ',')
 
-            # 4. BUSCA DO PREÇO ANTIGO (Robusta e isolada)
-            # Procura por blocos riscados (--previous ou tags <s>)
+            # 4. EXTRAÇÃO DO PREÇO ANTIGO (Procura o preço riscado real)
             match_old = re.search(r'<(?:s|span)[^>]*class="[^"]*(?:andes-money-amount--previous|andes-money-amount__previous)[^"]*"[^>]*>.*?<span[^>]*class="andes-money-amount__fraction"[^>]*>([0-9.]+)</span>', html, re.DOTALL)
             if not match_old:
-                # Fallback: procura qualquer fração que venha dentro de uma tag <s> riscada
                 match_old = re.search(r'<s[^>]*>.*?<span class="andes-money-amount__fraction"[^>]*>([0-9.]+)</span>.*?</s>', html, re.DOTALL)
 
             if match_old:
@@ -158,7 +156,7 @@ def get_mercadolibre_product_info(product_url):
                     old_val = float(f"{old_frac}.{old_cents}")
                     if price_str:
                         current_float = float(price_str.replace('R$ ', '').replace('.', '').replace(',', '.'))
-                        # Só aceita se o preço antigo for realmente maior que o atual
+                        # Só valida se o preço antigo for superior ao atual
                         if old_val > current_float:
                             old_price_str = f"R$ {old_val:.2f}".replace('.', ',')
                 except ValueError:
