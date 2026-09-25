@@ -21,7 +21,7 @@ MP_ACCESS_TOKEN = os.getenv("MP_ACCESS_TOKEN")
 SHOPEE_APP_ID = os.getenv("SHOPEE_APP_ID")
 SHOPEE_SECRET = os.getenv("SHOPEE_SECRET")
 
-# IDs do Telegram dos Administradores com acesso livre total (Substitua pelos seus IDs reais)
+# IDs do Telegram dos Administradores com acesso livre total
 ADMIN_IDS = [int(x.strip()) for x in os.getenv("ADMIN_IDS", "6063904865,6779689073").split(",") if x.strip()]
 
 # Inicializa SDK do Mercado Pago
@@ -30,8 +30,7 @@ sdk = mercadopago.SDK(MP_ACCESS_TOKEN) if MP_ACCESS_TOKEN else None
 # Flask criado apenas para manter a porta aberta exigida pelo Render (Health Check)
 app = Flask(__name__)
 
-# --- BANCO DE DADOS EM MEMÓRIA (Recomenda-se usar SQLite/MongoDB em produção) ---
-# Estrutura: user_db[telegram_id] = {"tests_left": 5, "plan": None, "expires_at": datetime}
+# --- BANCO DE DADOS EM MEMÓRIA ---
 user_db = {}
 
 # Estados da Conversa Passo a Passo
@@ -44,24 +43,25 @@ ASK_IMAGE = 5
 ASK_TITLE = 6
 ASK_OLD_PRICE = 7
 ASK_PRICE = 8
-ASK_CHANNEL = 9
-TEMU_ASK_PRICE = 10 
-TEMU_ASK_TITLE = 11
+ASK_BUTTON_STYLE = 9
+ASK_CHANNEL = 10
+TEMU_ASK_PRICE = 11 
+TEMU_ASK_TITLE = 12
+DUO_SELECT_FIRST = 13   # Escolha da 1ª plataforma do Duo
+DUO_SELECT_SECOND = 14  # Escolha da 2ª plataforma do Duo
 
 # --- PREÇOS DOS PLANOS (Em Reais) ---
-# Shopee e Temu mais baratas por exigirem mais trabalho manual do usuário
 PLAN_PRICES = {
     "single_shopee": 19.90,
     "single_temu": 19.90,
     "single_ml": 29.90,
     "single_shein": 29.90,
-    "duo": 39.90,      # Escolhe 2 plataformas
-    "pro": 59.90       # Todas as 4 plataformas (Ilimitado/Completo)
+    "duo": 39.90,      
+    "pro": 59.90       
 }
 
 # --- FUNÇÕES DE CONTROLE DE ACESSO E PLANOS ---
 def check_user_access(user_id, platform):
-    # Admins têm acesso livre a tudo
     if user_id in ADMIN_IDS:
         return True, "admin"
 
@@ -75,12 +75,10 @@ def check_user_access(user_id, platform):
 
     data = user_db[user_id]
 
-    # Verifica se tem plano ativo e se não expirou
     if data["plan"] and data["expires_at"] and datetime.now() < data["expires_at"]:
         if data["plan"] == "pro" or platform in data["platforms"]:
             return True, "subscription"
 
-    # Se não tem plano ativo, consome os testes grátis globais
     if data["tests_left"] > 0:
         return True, "test"
 
@@ -285,7 +283,7 @@ def get_shein_product_info(product_url):
 
     return {"title": title, "image": image_url, "price": price_str, "link": final_link}
 
-# --- GERADOR DE CARD / IMAGEM (Com Blur apenas para Temu e Shein) ---
+# --- GERADOR DE CARD / IMAGEM ---
 def generate_card_image(image_source, platform="mercadolivre"):
     prod_img = None
     if image_source:
@@ -407,7 +405,6 @@ async def platform_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await start(update, context)
         return SELECTING_PLATFORM
 
-    # Mapeamento da plataforma escolhida
     plat_map = {
         "plat_ml": ("mercadolivre", ML_ASK_LINK),
         "plat_shopee": ("shopee", SHOPEE_ASK_LINK),
@@ -418,7 +415,6 @@ async def platform_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if query.data in plat_map:
         platform_name, next_state = plat_map[query.data]
         
-        # Valida se o usuário tem permissão (Assinatura, Teste ou Admin)
         allowed, reason = check_user_access(user_id, platform_name)
         
         if not allowed:
@@ -429,7 +425,6 @@ async def platform_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return ConversationHandler.END
 
-        # Se usou um teste grátis, desconta 1
         if reason == "test":
             user_db[user_id]["tests_left"] -= 1
 
@@ -439,7 +434,22 @@ async def platform_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.reply_text(f"{names[platform_name]} selecionado!\n\nEnvie o link do produto:", parse_mode="Markdown")
         return next_state
 
-    # Lógica de geração de Link de Pagamento Mercado Pago para Assinaturas
+    # Intercepta a escolha do Plano Duo para iniciar a seleção das 2 plataformas
+    if query.data == "buy_duo":
+        keyboard = [
+            [InlineKeyboardButton("🟡 Mercado Livre", callback_data="duo1_mercadolivre"),
+             InlineKeyboardButton("🟠 Shopee", callback_data="duo1_shopee")],
+            [InlineKeyboardButton("🔴 Temu", callback_data="duo1_temu"),
+             InlineKeyboardButton("🟣 Shein", callback_data="duo1_shein")]
+        ]
+        await query.message.edit_text(
+            "⭐ **Plano Duo Selecionado (R$ 39,90)**\n\n"
+            "Por favor, escolha a **1ª plataforma** que deseja incluir no seu plano:",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return DUO_SELECT_FIRST
+
     if query.data.startswith("buy_"):
         plan_key = query.data.replace("buy_", "")
         price = PLAN_PRICES.get(plan_key, 39.90)
@@ -472,6 +482,85 @@ async def platform_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await query.message.reply_text("❌ Sistema de pagamento não configurado no momento.")
         return SELECTING_PLATFORM
+
+# Funções de Seleção do Plano Duo Passo a Passo
+async def duo_first_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    first_plat = query.data.replace("duo1_", "")
+    context.user_data["duo_first"] = first_plat
+    
+    names = {
+        "mercadolivre": "🟡 Mercado Livre", 
+        "shopee": "🟠 Shopee", 
+        "temu": "🔴 Temu", 
+        "shein": "🟣 Shein"
+    }
+    
+    # Cria novo teclado filtrando a plataforma já escolhida
+    keyboard = []
+    for code, name in names.items():
+        if code != first_plat:
+            keyboard.append([InlineKeyboardButton(name, callback_data=f"duo2_{code}")])
+
+    await query.message.edit_text(
+        f"✅ 1ª Plataforma escolhida: **{names[first_plat]}**\n\n"
+        "Agora, escolha a **2ª plataforma** do seu Plano Duo:",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+    return DUO_SELECT_SECOND
+
+async def duo_second_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    second_plat = query.data.replace("duo2_", "")
+    first_plat = context.user_data.get("duo_first")
+    selected_platforms = [first_plat, second_plat]
+    
+    user_id = update.effective_user.id
+    price = PLAN_PRICES["duo"]
+
+    if sdk:
+        preference_data = {
+            "items": [{
+                "title": "Assinatura Bot Afiliados - Plano Duo (30 dias)",
+                "quantity": 1,
+                "unit_price": float(price),
+                "currency_id": "BRL"
+            }],
+            "external_reference": str(user_id),
+            "metadata": {
+                "plan_key": "duo",
+                "platforms": selected_platforms
+            }
+        }
+        try:
+            pref_response = sdk.preference().create(preference_data)
+            init_point = pref_response["response"]["init_point"]
+            
+            names = {
+                "mercadolivre": "Mercado Livre", 
+                "shopee": "Shopee", 
+                "temu": "Temu", 
+                "shein": "Shein"
+            }
+            
+            keyboard = [[InlineKeyboardButton("💳 Pagar Plano Duo", url=init_point)]]
+            await query.message.edit_text(
+                f"💎 **Plano Duo configurado com sucesso!**\n\n"
+                f"• Plataformas: `{names.get(first_plat, first_plat)}` e `{names.get(second_plat, second_plat)}`\n"
+                f"• Valor: `R$ {price:.2f}`\n\n"
+                f"Clique abaixo para realizar o pagamento via Mercado Pago:",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+        except Exception as e:
+            await query.message.reply_text(f"❌ Erro ao gerar pagamento: {e}")
+            
+    return SELECTING_PLATFORM
 
 # Processar Mercado Livre
 async def process_ml_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -668,7 +757,40 @@ async def receive_old_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ASK_OLD_PRICE
 
     context.user_data["old_price"] = old_price
-    await update.message.reply_text("📢 Envie o **ID ou Username do canal/grupo** de destino:", parse_mode="Markdown")
+
+    keyboard = [
+        [InlineKeyboardButton("🔵 Azul (Primary)", callback_data="style_primary"),
+         InlineKeyboardButton("🟢 Verde (Success)", callback_data="style_success")],
+        [InlineKeyboardButton("🔴 Vermelho (Danger)", callback_data="style_danger"),
+         InlineKeyboardButton("⚪ Padrão (Sem cor)", callback_data="style_default")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await update.message.reply_text(
+        "🎨 **Escolha a cor de destaque do botão da oferta:**",
+        parse_mode="Markdown",
+        reply_markup=reply_markup
+    )
+    return ASK_BUTTON_STYLE
+
+async def receive_button_style(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    style_map = {
+        "style_primary": "primary",
+        "style_success": "success",
+        "style_danger": "danger",
+        "style_default": None
+    }
+    
+    selected_style = style_map.get(query.data, None)
+    context.user_data["button_style"] = selected_style
+    
+    await query.message.edit_text(
+        "📢 Agora envie o **ID ou Username do canal/grupo** de destino onde a oferta será publicada:",
+        parse_mode="Markdown"
+    )
     return ASK_CHANNEL
 
 async def receive_channel_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -691,6 +813,7 @@ async def receive_channel_and_send(update: Update, context: ContextTypes.DEFAULT
     link = context.user_data.get("link")
     img_src = context.user_data.get("image_source")
     platform = context.user_data.get("platform", "mercadolivre")
+    btn_style = context.user_data.get("button_style")
 
     card_img = generate_card_image(img_src, platform=platform)
     
@@ -708,7 +831,11 @@ async def receive_channel_and_send(update: Update, context: ContextTypes.DEFAULT
             f"🔥 *Oferta por tempo limitado!*"
         )
 
-    keyboard = [[InlineKeyboardButton("COMPRAR AGORA 🔥", url=link)]]
+    button_kwargs = {"text": "🔥 COMPRAR AGORA 🛒", "url": link}
+    if btn_style:
+        button_kwargs["style"] = btn_style
+
+    keyboard = [[InlineKeyboardButton(**button_kwargs)]]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
     try:
@@ -748,7 +875,6 @@ def mercado_pago_webhook():
                 metadata = payment_info.get("metadata", {})
                 plan_key = metadata.get("plan_key", "pro")
 
-                # Define as permissões conforme o plano escolhido
                 expires_at = datetime.now() + timedelta(days=30)
                 platforms = []
 
@@ -761,8 +887,8 @@ def mercado_pago_webhook():
                 elif plan_key == "single_shein":
                     platforms = ["shein"]
                 elif plan_key == "duo":
-                    # No Duo você pode ajustar quais plataformas libera (ex: padrão Shopee e Temu ou deixar o usuário escolher depois)
-                    platforms = ["shopee", "temu"]
+                    # Pega exatamente as duas plataformas escolhidas pelo usuário no fluxo anterior
+                    platforms = metadata.get("platforms", ["shopee", "temu"])
                 elif plan_key == "pro":
                     platforms = ["shopee", "temu", "mercadolivre", "shein"]
 
@@ -772,7 +898,7 @@ def mercado_pago_webhook():
                     "platforms": platforms,
                     "expires_at": expires_at
                 }
-                print(f"✅ Pagamento aprovado e plano ativado para o usuário ID: {telegram_id} (Plano: {plan_key})")
+                print(f"✅ Pagamento aprovado e plano ativado para o usuário ID: {telegram_id} (Plano: {plan_key}, Plataformas: {platforms})")
     return jsonify({"status": "ok"}), 200
 
 def run_flask():
@@ -792,6 +918,8 @@ def main():
         entry_points=[CommandHandler("start", start)],
         states={
             SELECTING_PLATFORM: [CallbackQueryHandler(platform_callback)],
+            DUO_SELECT_FIRST: [CallbackQueryHandler(duo_first_choice, pattern="^duo1_")],
+            DUO_SELECT_SECOND: [CallbackQueryHandler(duo_second_choice, pattern="^duo2_")],
             ML_ASK_LINK: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_ml_link)],
             SHOPEE_ASK_LINK: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_shopee_link)],
             TEMU_ASK_LINK: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_temu_link)],
@@ -801,6 +929,7 @@ def main():
             ASK_IMAGE: [MessageHandler(filters.PHOTO, receive_image)],
             ASK_TITLE: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_title)],
             ASK_OLD_PRICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_old_price)],
+            ASK_BUTTON_STYLE: [CallbackQueryHandler(receive_button_style, pattern="^style_")],
             ASK_PRICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_price)],
             ASK_CHANNEL: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_channel_and_send)],
         },
@@ -809,7 +938,7 @@ def main():
 
     application.add_handler(conv_handler)
 
-    print("🤖 Bot multiplataforma com sistema de assinaturas e testes iniciado no Render...")
+    print("🤖 Bot multiplataforma com seleção do Plano Duo iniciado no Render...")
     application.run_polling()
 
 if __name__ == "__main__":
