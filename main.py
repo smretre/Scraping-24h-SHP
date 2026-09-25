@@ -366,7 +366,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
-    # Verifica se a chamada veio de uma mensagem normal ou de uma callback query
     if update.message:
         await update.message.reply_text(
             f"✔️ **Seja bem-vindo ao Bot de Afiliados Automatizado!**\n\n"
@@ -451,7 +450,6 @@ async def platform_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return next_state
 
-    # Intercepta a escolha do Plano Duo para iniciar a seleção das 2 plataformas
     if query.data == "buy_duo":
         keyboard = [
             [InlineKeyboardButton("🟡 Mercado Livre", callback_data="duo1_mercadolivre"),
@@ -504,7 +502,6 @@ async def platform_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.edit_text("❌ Sistema de pagamento não configurado no momento.")
         return SELECTING_PLATFORM
 
-# Funções de Seleção do Plano Duo Passo a Passo
 async def duo_first_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -522,7 +519,6 @@ async def duo_first_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "shein": "🟣 Shein"
     }
     
-    # Cria novo teclado filtrando a plataforma já escolhida
     keyboard = []
     for code, name in names.items():
         if code != first_plat:
@@ -593,7 +589,6 @@ async def duo_second_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
     return SELECTING_PLATFORM
 
-# Processar Mercado Livre
 async def process_ml_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     if not text:
@@ -618,7 +613,6 @@ async def process_ml_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"💰 Preço detectado: `{info['price']}`\n\n❌ Digite e envie o **Preço Antigo** (ou `0` se não tiver):", parse_mode="Markdown")
     return ASK_OLD_PRICE
 
-# Processar Shopee
 async def process_shopee_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     if not text:
@@ -647,71 +641,35 @@ async def process_shopee_link(update: Update, context: ContextTypes.DEFAULT_TYPE
     await update.message.reply_text(f"💰 Preço detectado: `{product_info['price']}`\n\n❌ Digite e envie o **Preço Antigo** (ou `0` se não tiver):", parse_mode="Markdown")
     return ASK_OLD_PRICE
 
-# Processar Temu
+# --- PROCESSAMENTO TEMU ATUALIZADO (IGUAL À SHOPEE) ---
 async def process_temu_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     if not text:
         return TEMU_ASK_LINK
 
-    await update.message.reply_text("🔍 Extraindo informações da Temu...")
-    info = get_temu_product_info(text)
+    await update.message.reply_text("🔍 Analisando link da Temu...")
+    product_info = get_temu_product_info(text)
 
-    context.user_data["title"] = info["title"]
-    context.user_data["image_source"] = info["image"]
-    context.user_data["price"] = info["price"]
-    context.user_data["link"] = info["link"]
+    context.user_data["link"] = product_info["link"]
+    context.user_data["price"] = product_info["price"] or ""
+    context.user_data["title"] = product_info["title"]
+    context.user_data["image_source"] = product_info["image"]
 
-    if not info["image"]:
-        await update.message.reply_text("⚠️ Não conseguimos puxar a foto automaticamente. Envie a foto do produto:")
+    if not product_info["image"]:
+        await update.message.reply_text("📸 Não foi possível detectar a imagem. Envie a foto do produto:")
         return ASK_IMAGE
 
-    if not info["title"]:
-        await update.message.reply_text(
-            "⚠️ Não conseguimos extrair o título automaticamente da Temu.\n\n"
-            "📝 Digite e envie o **título correto** do produto:",
-            parse_mode="Markdown"
-        )
-        return TEMU_ASK_TITLE
+    if not product_info["title"]:
+        await update.message.reply_text("📝 Digite e envie o **título do produto**:", parse_mode="Markdown")
+        return ASK_TITLE
 
-    detected_price = info["price"] if info["price"] else "Não detectado"
-    
-    await update.message.reply_text(
-        f"📦 **Título detectado:** `{info['title']}`\n\n"
-        f"🏷️ **Preço detectado:** `{detected_price}`\n\n"
-        f"O preço está correto? Se estiver **certo**, digite o mesmo valor para confirmar. "
-        f"Se estiver **errado**, digite o **preço correto** agora (ex: `26,87`):",
-        parse_mode="Markdown"
-    )
-    return TEMU_ASK_PRICE
+    if not product_info["price"]:
+        await update.message.reply_text("💰 Digite e envie o **Preço Atual (Por)** do produto:", parse_mode="Markdown")
+        return ASK_PRICE
 
-async def receive_temu_title(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    title = update.message.text.strip()
-    if not title:
-        await update.message.reply_text("⚠️ Por favor, envie um título válido:")
-        return TEMU_ASK_TITLE
-
-    context.user_data["title"] = title
-    detected_price = context.user_data.get("price", "Não detectado")
-
-    await update.message.reply_text(
-        f"🏷️ **Preço detectado:** `{detected_price}`\n\n"
-        f"O preço está correto? Se estiver **certo**, digite o mesmo valor para confirmar. "
-        f"Se estiver **errado**, digite o **preço correto** agora (ex: `26,87`):",
-        parse_mode="Markdown"
-    )
-    return TEMU_ASK_PRICE
-
-async def receive_temu_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    price = update.message.text.strip()
-    if not price:
-        await update.message.reply_text("⚠️ Por favor, envie um preço válido:")
-        return TEMU_ASK_PRICE
-
-    context.user_data["price"] = price
-    await update.message.reply_text(f"✅ Preço definido: `{price}`\n\n❌ Agora digite e envie o **Preço Antigo** (ou `0` se não tiver):", parse_mode="Markdown")
+    await update.message.reply_text(f"💰 Preço detectado: `{product_info['price']}`\n\n❌ Digite e envie o **Preço Antigo** (ou `0` se não tiver):", parse_mode="Markdown")
     return ASK_OLD_PRICE
 
-# Processar Shein
 async def process_shein_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     if not text:
@@ -962,8 +920,6 @@ def main():
             ML_ASK_LINK: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_ml_link)],
             SHOPEE_ASK_LINK: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_shopee_link)],
             TEMU_ASK_LINK: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_temu_link)],
-            TEMU_ASK_TITLE: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_temu_title)],
-            TEMU_ASK_PRICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_temu_price)],
             SHEIN_ASK_LINK: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_shein_link)],
             ASK_IMAGE: [MessageHandler(filters.PHOTO, receive_image)],
             ASK_TITLE: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_title)],
