@@ -634,7 +634,6 @@ async def process_ml_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"🏷️ **Preço Antigo detectado:** `{info['old_price']}`\n\n",
             parse_mode="Markdown"
         )
-        return ASK_BUTTON_STYLE
 
     else:
         context.user_data["old_price"] = ""
