@@ -361,6 +361,19 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     return SELECTING_PLATFORM
 
+async def support(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Substitua "https://t.me/seu_grupo_de_suporte" pelo link real do seu grupo
+    keyboard = [[InlineKeyboardButton("💬 Acessar Grupo de Suporte", url="https://t.me/+WsO0zYtwrmUwOGEx")]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await update.message.reply_text(
+        "🛠️ **Central de Suporte**\n\n"
+        "Encontrou algum bug, problema ou tem alguma dúvida? "
+        "Clique no botão abaixo para entrar no nosso grupo de suporte oficial e falar diretamente com a gente!",
+        parse_mode="Markdown",
+        reply_markup=reply_markup
+    )
+    
 async def platform_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -912,6 +925,7 @@ def main():
         fallbacks=[CommandHandler("cancel", cancel), CommandHandler("start", start)],
     )
 
+    application.add_handler(CommandHandler("support", support))
     application.add_handler(conv_handler)
 
     print("🤖 Bot multiplataforma com navegação fluida iniciado no Render...")
