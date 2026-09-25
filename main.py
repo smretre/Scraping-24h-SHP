@@ -114,7 +114,7 @@ def get_mercadolibre_product_info(product_url):
             current_prices = []
             old_prices = []
 
-            # 3. Varredura inteligente de todas as frações de preço na página com análise de contexto
+            # 3. Varredura inteligente com foco no contexto
             for match in re.finditer(r'<span[^>]*class="andes-money-amount__fraction"[^>]*>([0-9.]+)</span>', html):
                 fraction_val = match.group(1).replace('.', '')
                 
@@ -125,14 +125,21 @@ def get_mercadolibre_product_info(product_url):
                 
                 try:
                     val = float(f"{fraction_val}.{cents_val}")
-                    if val < 10.0:
+                    
+                    # Filtro mínimo de segurança universal (apenas ignora valores absurdamente irrelevantes abaixo de R$ 1,00)
+                    if val < 1.0:
                         continue
                     
-                    # Analisa o contexto ao redor para ver se é um preço antigo/riscado
+                    # Analisa o contexto ao redor (300 caracteres antes, 100 depois)
                     context_start = max(0, match.start() - 300)
                     context_end = min(len(html), match.end() + 100)
-                    context = html[context_start:context_end]
+                    context = html[context_start:context_end].lower()
                     
+                    # BLINDAGEM CONTRA RUÍDOS: Ignora se o contexto indicar que é parcela ("em 10x") ou frete/envio
+                    if any(term in context for term in ['em ', 'x r$', 'parcelas', 'frete', 'envio']):
+                        continue
+                    
+                    # Separa se é preço antigo ou atual com base nas classes de risco
                     if 'andes-money-amount--previous' in context or '<s ' in context or '<s>' in context or 'andes-money-amount__previous' in context:
                         if val not in old_prices:
                             old_prices.append(val)
@@ -142,11 +149,9 @@ def get_mercadolibre_product_info(product_url):
                 except ValueError:
                     continue
 
-            # Define o Preço Atual (se houver candidatos válidos, o menor costuma ser o preço promocional à vista/Pix)
+            # Define o Preço Atual (pega o menor valor válido detetado)
             if current_prices:
-                # Ordena para garantir que se houver múltiplos, pegamos o principal coerente
                 current_prices.sort()
-                # O Oppo costuma ter o valor de destaque principal
                 p_val = current_prices[0]
                 price_str = f"R$ {p_val:.2f}".replace('.', ',')
 
@@ -159,13 +164,12 @@ def get_mercadolibre_product_info(product_url):
                     if old_val > current_float:
                         old_price_str = f"R$ {old_val:.2f}".replace('.', ',')
 
-            # 4. Fallback caso as classes visuais falhem (JSON-LD ou itemprop)
+            # 4. Fallback caso as classes visuais falhem (JSON-LD)
             if not price_str:
                 match_json_price = re.search(r'"price":\s*"?([0-9.]+)"?', html)
                 if match_json_price:
                     p_val = float(match_json_price.group(1))
-                    if p_val >= 10.0:
-                    
+                    if p_val >= 1.0:
                         price_str = f"R$ {p_val:.2f}".replace('.', ',')
 
     except Exception as e:
