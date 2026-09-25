@@ -101,51 +101,55 @@ def get_mercadolibre_product_info(product_url):
         if resp.status_code == 200:
             html = resp.text
             
-            # 1. Extrair o Título pelas Meta Tags Open Graph
+            # Extrair Título e Imagem
             match_title = re.search(r'<meta property="og:title" content="([^"]+)"', html)
             if match_title:
                 title = match_title.group(1)
 
-            # 2. Extrair a Imagem pelas Meta Tags Open Graph
             match_img = re.search(r'<meta property="og:image" content="([^"]+)"', html)
             if match_img:
                 image_url = match_img.group(1)
 
-            # 3. EXTRAÇÃO CIRÚRGICA DO PREÇO ATUAL (Focado estritamente na área de preço principal do produto)
-            # Tenta apanhar na segunda linha de preço (onde fica o valor com desconto do Pix/oferta)
+            # EXTRAÇÃO CIRÚRGICA DO PREÇO ATUAL COM LOGS DE DEPURAÇÃO
             match_main = re.search(r'class="(?:ui-pdp-price__second-line|ui-pdp-price__main-container)[^"]*"[^>]*>(.*?)</div>', html, re.DOTALL)
             target_html = match_main.group(1) if match_main else html
+            
+            print(f"--- DEBUG MERCADO LIVRE ---")
+            print(f"Bloco principal encontrado? {'Sim' if match_main else 'Não (usando HTML completo)'}")
 
-            # Procura a fração de preço dentro desse bloco principal
+            # Procura todas as frações dentro do alvo para vermos o que existe lá dentro
+            all_fractions = re.findall(r'class="andes-money-amount__fraction"[^>]*>([0-9.]+)</span>', target_html)
+            print(f"Frações encontradas no bloco: {all_fractions}")
+
             match_fraction = re.search(r'class="andes-money-amount__fraction"[^>]*>([0-9.]+)</span>', target_html)
             if match_fraction:
                 fraction_val = match_fraction.group(1).replace('.', '')
                 
-                # Pega os centavos logo após a fração encontrada
                 sub_html = target_html[match_fraction.end():match_fraction.end()+80]
                 match_cents = re.search(r'class="andes-money-amount__cents"[^>]*>([0-9]+)</span>', sub_html)
                 cents_val = match_cents.group(1) if match_cents else "00"
                 
+                print(f"Fração capturada: {fraction_val} | Centavos capturados: {cents_val}")
+                
                 try:
                     p_val = float(f"{fraction_val}.{cents_val}")
+                    print(f"Valor numérico montado: {p_val}")
                     if p_val >= 1.0:
                         price_str = f"R$ {p_val:.2f}".replace('.', ',')
-                except ValueError:
-                    pass
+                except ValueError as ve:
+                    print(f"Erro ao converter preço: {ve}")
 
-            # Fallback geral caso o bloco principal mude de nome
+            # Fallback geral
             if not price_str:
                 match_price = re.search(r'<meta itemprop="price" content="([0-9.]+)"', html)
                 if match_price:
                     p_val = float(match_price.group(1))
+                    print(f"Preço obtido via itemprop: {p_val}")
                     if p_val >= 1.0:
                         price_str = f"R$ {p_val:.2f}".replace('.', ',')
 
-            # 4. EXTRAÇÃO DO PREÇO ANTIGO (Procura o preço riscado de forma isolada)
+            # Preço Antigo
             match_old = re.search(r'<(?:s|span)[^>]*class="[^"]*(?:andes-money-amount--previous|andes-money-amount__previous)[^"]*"[^>]*>.*?<span[^>]*class="andes-money-amount__fraction"[^>]*>([0-9.]+)</span>', html, re.DOTALL)
-            if not match_old:
-                match_old = re.search(r'<s[^>]*>.*?<span class="andes-money-amount__fraction"[^>]*>([0-9.]+)</span>.*?</s>', html, re.DOTALL)
-
             if match_old:
                 old_frac = match_old.group(1).replace('.', '')
                 sub_old = html[match_old.start():match_old.end()]
@@ -154,12 +158,14 @@ def get_mercadolibre_product_info(product_url):
                 
                 try:
                     old_val = float(f"{old_frac}.{old_cents}")
+                    print(f"Preço antigo detetado: {old_val}")
                     if price_str:
                         current_float = float(price_str.replace('R$ ', '').replace('.', '').replace(',', '.'))
                         if old_val > current_float:
                             old_price_str = f"R$ {old_val:.2f}".replace('.', ',')
                 except ValueError:
                     pass
+            print(f"---------------------------")
 
     except Exception as e:
         print(f"⚠️ Erro ao extrair dados do Mercado Livre: {e}")
@@ -171,7 +177,7 @@ def get_mercadolibre_product_info(product_url):
         "old_price": old_price_str,
         "link": final_link
     }
-    
+
 # --- INTEGRAÇÃO COM A API DA SHOPEE ---
 def generate_shopee_signature(app_id, secret, payload, timestamp):
     factor = f"{app_id}{timestamp}{payload}{secret}"
