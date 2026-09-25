@@ -925,7 +925,7 @@ def main():
         fallbacks=[CommandHandler("cancel", cancel), CommandHandler("start", start)],
     )
 
-    application.add_handler(CommandHandler("support", support))
+    application.add_handler(CommandHandler("suporte", support))
     application.add_handler(conv_handler)
 
     print("🤖 Bot multiplataforma com navegação fluida iniciado no Render...")
