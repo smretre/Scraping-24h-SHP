@@ -488,7 +488,7 @@ async def platform_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 init_point = pref_response["response"]["init_point"]
                 
                 keyboard = [
-                    [InlineKeyboardButton("💳 Pagar plano Pro", url=init_point)],
+                    [InlineKeyboardButton("💳 Pagar plano", url=init_point)],
                     [InlineKeyboardButton("🔙 Voltar ao Menu", callback_data="menu_plans")]
                 ]
                 await query.message.edit_text(
