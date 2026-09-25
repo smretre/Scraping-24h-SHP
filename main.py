@@ -86,7 +86,8 @@ def check_user_access(user_id, platform):
 def get_mercadolibre_product_info(product_url):
     title = None
     image_url = None
-    price_str = None
+    current_price_str = None
+    old_price_str = None
     final_link = product_url
 
     try:
@@ -99,38 +100,54 @@ def get_mercadolibre_product_info(product_url):
         
         if resp.status_code == 200:
             html = resp.text
+            
+            # Extrair Título
             match_title = re.search(r'<meta property="og:title" content="([^"]+)"', html)
             if match_title:
                 title = match_title.group(1)
 
+            # Extrair Imagem
             match_img = re.search(r'<meta property="og:image" content="([^"]+)"', html)
             if match_img:
                 image_url = match_img.group(1)
 
-            match_price = re.search(r'<meta itemprop="price" content="([0-9.]+)"', html)
-            if match_price:
-                p_val = float(match_price.group(1))
-                price_str = f"R$ {p_val:.2f}".replace('.', ',')
-            
-            if not price_str:
-                match_fraction = re.search(r'class="andes-money-amount__fraction"[^>]*>([0-9.]+)</span>', html)
-                if match_fraction:
-                    fraction_val = match_fraction.group(1).replace('.', '')
-                    match_cents = re.search(r'class="andes-money-amount__cents"[^>]*>([0-9]+)</span>', html)
-                    cents_val = match_cents.group(1) if match_cents else "00"
-                    p_val = float(f"{fraction_val}.{cents_val}")
-                    price_str = f"R$ {p_val:.2f}".replace('.', ',')
+            # 1. Tentar capturar o PREÇO ANTIGO (geralmente dentro de tags riscadas <s>)
+            old_price_match = re.search(r'<s[^>]*>.*?<span class="andes-money-amount__fraction"[^>]*>([0-9.]+)</span>.*?</s>', html, re.DOTALL)
+            if old_price_match:
+                fraction_val = old_price_match.group(1).replace('.', '')
+                cents_match = re.search(r'class="andes-money-amount__cents"[^>]*>([0-9]+)</span>', html[old_price_match.start():old_price_match.end()])
+                cents_val = cents_match.group(1) if cents_match else "00"
+                p_val = float(f"{fraction_val}.{cents_val}")
+                old_price_str = f"R$ {p_val:.2f}".replace('.', ',')
 
-            if not price_str:
+            # 2. Capturar o PREÇO ATUAL (removendo temporariamente o bloco antigo para não confundir)
+            html_without_old = re.sub(r'<s[^>]*>.*?</s>', 'REMOVIDO_ANTIGO', html, flags=re.DOTALL)
+            
+            match_fraction = re.search(r'class="andes-money-amount__fraction"[^>]*>([0-9.]+)</span>', html_without_old)
+            if match_fraction:
+                fraction_val = match_fraction.group(1).replace('.', '')
+                match_cents = re.search(r'class="andes-money-amount__cents"[^>]*>([0-9]+)</span>', html_without_old)
+                cents_val = match_cents.group(1) if match_cents else "00"
+                p_val = float(f"{fraction_val}.{cents_val}")
+                current_price_str = f"R$ {p_val:.2f}".replace('.', ',')
+
+            # Fallback caso não ache pelas classes fracionárias
+            if not current_price_str:
                 match_json_price = re.search(r'"price":\s*"?([0-9.]+)"?', html)
                 if match_json_price:
                     p_val = float(match_json_price.group(1))
-                    price_str = f"R$ {p_val:.2f}".replace('.', ',')
+                    current_price_str = f"R$ {p_val:.2f}".replace('.', ',')
+
     except Exception as e:
         print(f"⚠️ Erro ao extrair dados do Mercado Livre: {e}")
 
-    return {"title": title, "image": image_url, "price": price_str, "link": final_link}
-
+    return {
+        "title": title, 
+        "image": image_url, 
+        "price": current_price_str,  # Este é o preço atual com desconto
+        "old_price": old_price_str,  # Este é o preço antigo (se houver)
+        "link": final_link
+    }
 # --- INTEGRAÇÃO COM A API DA SHOPEE ---
 def generate_shopee_signature(app_id, secret, payload, timestamp):
     factor = f"{app_id}{timestamp}{payload}{secret}"
@@ -600,9 +617,25 @@ async def process_ml_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("💰 Digite e envie o **Preço Atual (Por)** do produto:", parse_mode="Markdown")
         return ASK_PRICE
 
-    await update.message.reply_text(f"💰 Preço detectado: `{info['price']}`\n\n❌ Digite e envie o **Preço Antigo** (ou `0` se não tiver):", parse_mode="Markdown")
-    return ASK_OLD_PRICE
+    # Se o bot achou o preço antigo sozinho, ele salva e pode avançar
+    if info["old_price"]:
+        context.user_data["old_price"] = info["old_price"]
+        await update.message.reply_text(
+            f"✅ **Preço Atual:** `{info['price']}`\n"
+            f"🏷️ **Preço Antigo detectado:** `{info['old_price']}`\n\n",
+            parse_mode="Markdown"
+        )
+        return ASK_BUTTON_STYLE
 
+    else:
+        context.user_data["old_price"] = ""
+        await update.message.reply_text(
+            f"💰 Preço atual detectado: `{info['price']}`\n\n"
+            "❌ Digite e envie o **Preço Antigo** (ou `0` se não tiver):", 
+            parse_mode="Markdown"
+        )
+        return ASK_OLD_PRICE
+        
 async def process_shopee_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     if not text:
