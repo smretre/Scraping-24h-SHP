@@ -101,66 +101,72 @@ def get_mercadolibre_product_info(product_url):
         if resp.status_code == 200:
             html = resp.text
             
-            # 1. Extrai o Título pelas Meta Tags Open Graph
+            # 1. Extrair o Título pelas Meta Tags Open Graph
             match_title = re.search(r'<meta property="og:title" content="([^"]+)"', html)
             if match_title:
                 title = match_title.group(1)
 
-            # 2. Extrai a Imagem pelas Meta Tags Open Graph
+            # 2. Extrair a Imagem pelas Meta Tags Open Graph
             match_img = re.search(r'<meta property="og:image" content="([^"]+)"', html)
             if match_img:
                 image_url = match_img.group(1)
 
-            # 3. EXTRAÇÃO DO PREÇO ATUAL (Prioridade para a classe de destaque visual da oferta/Pix)
-            match_fraction = re.search(r'class="andes-money-amount__fraction"[^>]*>([0-9.]+)</span>', html)
-            if match_fraction:
-                fraction_val = match_fraction.group(1).replace('.', '')
+            current_prices = []
+            old_prices = []
+
+            # 3. Varredura inteligente de todas as frações de preço na página com análise de contexto
+            for match in re.finditer(r'<span[^>]*class="andes-money-amount__fraction"[^>]*>([0-9.]+)</span>', html):
+                fraction_val = match.group(1).replace('.', '')
                 
-                # Busca os centavos localmente logo após a fração para evitar apanhar das parcelas
-                sub_html = html[match_fraction.end():match_fraction.end()+80]
+                # Procura os centavos logo após esta fração específica (janela de 80 caracteres)
+                sub_html = html[match.end():match.end()+80]
                 match_cents = re.search(r'class="andes-money-amount__cents"[^>]*>([0-9]+)</span>', sub_html)
                 cents_val = match_cents.group(1) if match_cents else "00"
                 
-                p_val = float(f"{fraction_val}.{cents_val}")
-                if p_val >= 10.0:
-                    price_str = f"R$ {p_val:.2f}".replace('.', ',')
+                try:
+                    val = float(f"{fraction_val}.{cents_val}")
+                    if val < 10.0:
+                        continue
+                    
+                    # Analisa o contexto ao redor para ver se é um preço antigo/riscado
+                    context_start = max(0, match.start() - 300)
+                    context_end = min(len(html), match.end() + 100)
+                    context = html[context_start:context_end]
+                    
+                    if 'andes-money-amount--previous' in context or '<s ' in context or '<s>' in context or 'andes-money-amount__previous' in context:
+                        if val not in old_prices:
+                            old_prices.append(val)
+                    else:
+                        if val not in current_prices:
+                            current_prices.append(val)
+                except ValueError:
+                    continue
 
-            # Tentativa B: Se a classe visual falhar, recorremos ao itemprop="price"
-            if not price_str:
-                match_price = re.search(r'<meta itemprop="price" content="([0-9.]+)"', html)
-                if match_price:
-                    p_val = float(match_price.group(1))
-                    if p_val >= 10.0:
-                        price_str = f"R$ {p_val:.2f}".replace('.', ',')
+            # Define o Preço Atual (se houver candidatos válidos, o menor costuma ser o preço promocional à vista/Pix)
+            if current_prices:
+                # Ordena para garantir que se houver múltiplos, pegamos o principal coerente
+                current_prices.sort()
+                # O Oppo costuma ter o valor de destaque principal
+                p_val = current_prices[0]
+                price_str = f"R$ {p_val:.2f}".replace('.', ',')
 
-            # Tentativa C: JSON-LD estruturado
+            # Define o Preço Antigo
+            if old_prices:
+                old_prices.sort(reverse=True)
+                old_val = old_prices[0]
+                if price_str:
+                    current_float = float(price_str.replace('R$ ', '').replace('.', '').replace(',', '.'))
+                    if old_val > current_float:
+                        old_price_str = f"R$ {old_val:.2f}".replace('.', ',')
+
+            # 4. Fallback caso as classes visuais falhem (JSON-LD ou itemprop)
             if not price_str:
                 match_json_price = re.search(r'"price":\s*"?([0-9.]+)"?', html)
                 if match_json_price:
                     p_val = float(match_json_price.group(1))
                     if p_val >= 10.0:
+                    
                         price_str = f"R$ {p_val:.2f}".replace('.', ',')
-
-            # 4. EXTRAÇÃO DO PREÇO ANTIGO (Procura o preço riscado real)
-            match_old = re.search(r'<(?:s|span)[^>]*class="[^"]*(?:andes-money-amount--previous|andes-money-amount__previous)[^"]*"[^>]*>.*?<span[^>]*class="andes-money-amount__fraction"[^>]*>([0-9.]+)</span>', html, re.DOTALL)
-            if not match_old:
-                match_old = re.search(r'<s[^>]*>.*?<span class="andes-money-amount__fraction"[^>]*>([0-9.]+)</span>.*?</s>', html, re.DOTALL)
-
-            if match_old:
-                old_frac = match_old.group(1).replace('.', '')
-                sub_old = html[match_old.start():match_old.end()]
-                match_old_cents = re.search(r'class="andes-money-amount__cents"[^>]*>([0-9]+)</span>', sub_old)
-                old_cents = match_old_cents.group(1) if match_old_cents else "00"
-                
-                try:
-                    old_val = float(f"{old_frac}.{old_cents}")
-                    if price_str:
-                        current_float = float(price_str.replace('R$ ', '').replace('.', '').replace(',', '.'))
-                        # Só valida se o preço antigo for superior ao atual
-                        if old_val > current_float:
-                            old_price_str = f"R$ {old_val:.2f}".replace('.', ',')
-                except ValueError:
-                    pass
 
     except Exception as e:
         print(f"⚠️ Erro ao extrair dados do Mercado Livre: {e}")
