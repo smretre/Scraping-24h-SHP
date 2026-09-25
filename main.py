@@ -86,7 +86,7 @@ def check_user_access(user_id, platform):
 def get_mercadolibre_product_info(product_url):
     title = None
     image_url = None
-    current_price_str = None
+    price_str = None
     old_price_str = None
     final_link = product_url
 
@@ -136,15 +136,15 @@ def get_mercadolibre_product_info(product_url):
                     
                     # Se o candidato for diferente do preço antigo, ele é o preço atual!
                     if not old_price_str or candidate_val != old_price_str:
-                        current_price_str = candidate_val
+                        price_str = candidate_val
                         break
             
             # Fallback se a lista falhar
-            if not current_price_str:
+            if not price_str:
                 match_json_price = re.search(r'"price":\s*"?([0-9.]+)"?', html)
                 if match_json_price:
                     p_val = float(match_json_price.group(1))
-                    current_price_str = f"R$ {p_val:.2f}".replace('.', ',')
+                    price_str = f"R$ {p_val:.2f}".replace('.', ',')
 
     except Exception as e:
         print(f"⚠️ Erro ao extrair dados do Mercado Livre: {e}")
@@ -152,7 +152,7 @@ def get_mercadolibre_product_info(product_url):
     return {
         "title": title, 
         "image": image_url, 
-        "price": current_price_str,  # Preço atual corrigido
+        "price": price_str,  # Preço atual corrigido
         "old_price": old_price_str,  # Preço antigo que já estava a acertar
         "link": final_link
     }
