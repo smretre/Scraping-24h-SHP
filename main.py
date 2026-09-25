@@ -111,7 +111,7 @@ def get_mercadolibre_product_info(product_url):
             if match_img:
                 image_url = match_img.group(1)
 
-            # 1. Tentar capturar o PREÇO ANTIGO (geralmente dentro de tags riscadas <s>)
+            # 1. Tentar capturar o PREÇO ANTIGO (dentro de tags riscadas <s>)
             old_price_match = re.search(r'<s[^>]*>.*?<span class="andes-money-amount__fraction"[^>]*>([0-9.]+)</span>.*?</s>', html, re.DOTALL)
             if old_price_match:
                 fraction_val = old_price_match.group(1).replace('.', '')
@@ -120,18 +120,26 @@ def get_mercadolibre_product_info(product_url):
                 p_val = float(f"{fraction_val}.{cents_val}")
                 old_price_str = f"R$ {p_val:.2f}".replace('.', ',')
 
-            # 2. Capturar o PREÇO ATUAL (removendo temporariamente o bloco antigo para não confundir)
-            html_without_old = re.sub(r'<s[^>]*>.*?</s>', 'REMOVIDO_ANTIGO', html, flags=re.DOTALL)
-            
-            match_fraction = re.search(r'class="andes-money-amount__fraction"[^>]*>([0-9.]+)</span>', html_without_old)
-            if match_fraction:
-                fraction_val = match_fraction.group(1).replace('.', '')
-                match_cents = re.search(r'class="andes-money-amount__cents"[^>]*>([0-9]+)</span>', html_without_old)
-                cents_val = match_cents.group(1) if match_cents else "00"
-                p_val = float(f"{fraction_val}.{cents_val}")
-                current_price_str = f"R$ {p_val:.2f}".replace('.', ',')
+            # 2. CAPTURAR O PREÇO ATUAL COM MAIS PRECISÃO
+            # No Mercado Livre, o preço atual costuma vir logo após o bloco de desconto ou na classe andes-money-amount principal que NÃO está dentro de <s>
+            # Vamos procurar todas as ocorrências de frações de preço na página
+            fractions = re.findall(r'<span class="andes-money-amount__fraction"[^>]*>([0-9.]+)</span>', html)
+            cents_list = re.findall(r'class="andes-money-amount__cents"[^>]*>([0-9]+)</span>', html)
 
-            # Fallback caso não ache pelas classes fracionárias
+            # Se achamos frações de preço, o preço atual geralmente é a primeira ou segunda aparição que não seja o preço antigo
+            if fractions:
+                # Se o preço antigo foi encontrado, o preço atual costuma ser o valor imediatamente seguinte ou o primeiro da listagem que difere do antigo
+                for idx, frac in enumerate(fractions):
+                    clean_frac = frac.replace('.', '')
+                    cents_val = cents_list[idx] if idx < len(cents_list) else "00"
+                    candidate_val = f"R$ {float(f'{clean_frac}.{cents_val}'):.2f}".replace('.', ',')
+                    
+                    # Se o candidato for diferente do preço antigo, ele é o preço atual!
+                    if not old_price_str or candidate_val != old_price_str:
+                        current_price_str = candidate_val
+                        break
+            
+            # Fallback se a lista falhar
             if not current_price_str:
                 match_json_price = re.search(r'"price":\s*"?([0-9.]+)"?', html)
                 if match_json_price:
@@ -144,10 +152,11 @@ def get_mercadolibre_product_info(product_url):
     return {
         "title": title, 
         "image": image_url, 
-        "price": current_price_str,  # Este é o preço atual com desconto
-        "old_price": old_price_str,  # Este é o preço antigo (se houver)
+        "price": current_price_str,  # Preço atual corrigido
+        "old_price": old_price_str,  # Preço antigo que já estava a acertar
         "link": final_link
     }
+    
 # --- INTEGRAÇÃO COM A API DA SHOPEE ---
 def generate_shopee_signature(app_id, secret, payload, timestamp):
     factor = f"{app_id}{timestamp}{payload}{secret}"
