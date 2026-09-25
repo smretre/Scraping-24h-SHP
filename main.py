@@ -629,14 +629,25 @@ async def process_ml_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Se o bot achou o preço antigo sozinho, ele salva e pode avançar
     if info["old_price"]:
         context.user_data["old_price"] = info["old_price"]
+        
+        # Defina o teclado de estilos (caso já tenha ele pronto em outra parte do código)
+        keyboard = [
+            [InlineKeyboardButton("🔵 Azul", callback_data="style_primary"),
+             InlineKeyboardButton("🟢 Verde", callback_data="style_success")],
+            [InlineKeyboardButton("🔴 Vermelho", callback_data="style_danger"),
+             InlineKeyboardButton("⚪ Padrão", callback_data="style_default")]
+        ]
+        
         await update.message.reply_text(
             f"✅ **Preço Atual:** `{info['price']}`\n"
-            f"🏷️ **Preço Antigo detectado:** `{info['old_price']}`\n\n",
-            parse_mode="Markdown"
+            f"🏷️ **Preço Antigo detectado:** `{info['old_price']}`\n\n"
+            "🎨 **Escolha a cor de destaque do botão da oferta:**",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(keyboard)
         )
-        return ASK_OLD_PRICE
-        
-    else:
+        return ASK_BUTTON_STYLE
+
+      else:
         context.user_data["old_price"] = ""
         await update.message.reply_text(
             f"💰 Preço atual detectado: `{info['price']}`\n\n"
