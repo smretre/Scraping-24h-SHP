@@ -359,20 +359,30 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     keyboard = [
         [InlineKeyboardButton("🟡 Mercado Livre", callback_data="plat_ml"),
-         InlineKeyboardButton("🟠 Shopee (Mais Barata)", callback_data="plat_shopee")],
-        [InlineKeyboardButton("🔴 Temu (Mais Barata)", callback_data="plat_temu"),
+         InlineKeyboardButton("🟠 Shopee", callback_data="plat_shopee")],
+        [InlineKeyboardButton("🔴 Temu", callback_data="plat_temu"),
          InlineKeyboardButton("🟣 Shein", callback_data="plat_shein")],
-        [InlineKeyboardButton("💎 Ver Planos e Assinaturas", callback_data="menu_plans")]
+        [InlineKeyboardButton("💎 Ver Planos", callback_data="menu_plans")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
-    await update.message.reply_text(
-        f"✔️ **Seja bem-vindo ao Bot de Afiliados Automatizado!**\n\n"
-        f"ℹ️ `{tests_info}`\n\n"
-        "Escolha abaixo em qual plataforma deseja gerar o anúncio ou ver nossos planos:",
-        parse_mode="Markdown",
-        reply_markup=reply_markup
-    )
+    # Verifica se a chamada veio de uma mensagem normal ou de uma callback query
+    if update.message:
+        await update.message.reply_text(
+            f"✔️ **Seja bem-vindo ao Bot de Afiliados Automatizado!**\n\n"
+            f"ℹ️ `{tests_info}`\n\n"
+            "Escolha abaixo em qual plataforma deseja gerar o anúncio ou ver nossos planos:",
+            parse_mode="Markdown",
+            reply_markup=reply_markup
+        )
+    elif update.callback_query:
+        await update.callback_query.message.edit_text(
+            f"✔️ **Seja bem-vindo ao Bot de Afiliados Automatizado!**\n\n"
+            f"ℹ️ `{tests_info}`\n\n"
+            "Escolha abaixo em qual plataforma deseja gerar o anúncio ou ver nossos planos:",
+            parse_mode="Markdown",
+            reply_markup=reply_markup
+        )
     return SELECTING_PLATFORM
 
 async def platform_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -418,12 +428,14 @@ async def platform_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         allowed, reason = check_user_access(user_id, platform_name)
         
         if not allowed:
-            await query.message.reply_text(
+            keyboard = [[InlineKeyboardButton("🔙 Voltar ao Menu", callback_data="back_start")]]
+            await query.message.edit_text(
                 "❌ **Seus testes grátis acabaram!**\n\n"
-                "Para continuar postando ofertas, por favor escolha um plano de assinatura clicando em `/start`.",
-                parse_mode="Markdown"
+                "Para continuar postando ofertas, por favor escolha um plano de assinatura.",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup(keyboard)
             )
-            return ConversationHandler.END
+            return SELECTING_PLATFORM
 
         if reason == "test":
             user_db[user_id]["tests_left"] -= 1
@@ -431,7 +443,12 @@ async def platform_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["platform"] = platform_name
         
         names = {"mercadolivre": "🟡 Mercado Livre", "shopee": "🟠 Shopee", "temu": "🔴 Temu", "shein": "🟣 Shein"}
-        await query.message.reply_text(f"{names[platform_name]} selecionado!\n\nEnvie o link do produto:", parse_mode="Markdown")
+        keyboard = [[InlineKeyboardButton("🔙 Voltar", callback_data="back_start")]]
+        await query.message.edit_text(
+            f"{names[platform_name]} selecionado!\n\nEnvie o link do produto:", 
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
         return next_state
 
     # Intercepta a escolha do Plano Duo para iniciar a seleção das 2 plataformas
@@ -440,7 +457,8 @@ async def platform_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("🟡 Mercado Livre", callback_data="duo1_mercadolivre"),
              InlineKeyboardButton("🟠 Shopee", callback_data="duo1_shopee")],
             [InlineKeyboardButton("🔴 Temu", callback_data="duo1_temu"),
-             InlineKeyboardButton("🟣 Shein", callback_data="duo1_shein")]
+             InlineKeyboardButton("🟣 Shein", callback_data="duo1_shein")],
+            [InlineKeyboardButton("🔙 Voltar", callback_data="menu_plans")]
         ]
         await query.message.edit_text(
             "⭐ **Plano Duo Selecionado (R$ 39,90)**\n\n"
@@ -469,7 +487,10 @@ async def platform_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pref_response = sdk.preference().create(preference_data)
                 init_point = pref_response["response"]["init_point"]
                 
-                keyboard = [[InlineKeyboardButton("💳 Pagar com Mercado Pago", url=init_point)]]
+                keyboard = [
+                    [InlineKeyboardButton("💳 Pagar plano Pro", url=init_point)],
+                    [InlineKeyboardButton("🔙 Voltar ao Menu", callback_data="menu_plans")]
+                ]
                 await query.message.edit_text(
                     f"🔗 **Link de pagamento gerado com sucesso!**\n\n"
                     f"Valor: `R$ {price:.2f}`\n"
@@ -478,9 +499,9 @@ async def platform_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     reply_markup=InlineKeyboardMarkup(keyboard)
                 )
             except Exception as e:
-                await query.message.reply_text(f"❌ Erro ao gerar pagamento no Mercado Pago: {e}")
+                await query.message.edit_text(f"❌ Erro ao gerar pagamento no Mercado Pago: {e}")
         else:
-            await query.message.reply_text("❌ Sistema de pagamento não configurado no momento.")
+            await query.message.edit_text("❌ Sistema de pagamento não configurado no momento.")
         return SELECTING_PLATFORM
 
 # Funções de Seleção do Plano Duo Passo a Passo
@@ -488,6 +509,9 @@ async def duo_first_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     
+    if query.data == "menu_plans":
+        return await platform_callback(update, context)
+        
     first_plat = query.data.replace("duo1_", "")
     context.user_data["duo_first"] = first_plat
     
@@ -503,6 +527,7 @@ async def duo_first_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for code, name in names.items():
         if code != first_plat:
             keyboard.append([InlineKeyboardButton(name, callback_data=f"duo2_{code}")])
+    keyboard.append([InlineKeyboardButton("🔙 Voltar", callback_data="buy_duo")])
 
     await query.message.edit_text(
         f"✅ 1ª Plataforma escolhida: **{names[first_plat]}**\n\n"
@@ -516,6 +541,9 @@ async def duo_second_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     
+    if query.data.startswith("duo1_") or query.data == "buy_duo":
+        return await duo_first_choice(update, context)
+        
     second_plat = query.data.replace("duo2_", "")
     first_plat = context.user_data.get("duo_first")
     selected_platforms = [first_plat, second_plat]
@@ -548,7 +576,10 @@ async def duo_second_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "shein": "Shein"
             }
             
-            keyboard = [[InlineKeyboardButton("💳 Pagar Plano Duo", url=init_point)]]
+            keyboard = [
+                [InlineKeyboardButton("💳 Pagar Plano Duo", url=init_point)],
+                [InlineKeyboardButton("🔙 Voltar", callback_data="buy_duo")]
+            ]
             await query.message.edit_text(
                 f"💎 **Plano Duo configurado com sucesso!**\n\n"
                 f"• Plataformas: `{names.get(first_plat, first_plat)}` e `{names.get(second_plat, second_plat)}`\n"
@@ -558,7 +589,7 @@ async def duo_second_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=InlineKeyboardMarkup(keyboard)
             )
         except Exception as e:
-            await query.message.reply_text(f"❌ Erro ao gerar pagamento: {e}")
+            await query.message.edit_text(f"❌ Erro ao gerar pagamento: {e}")
             
     return SELECTING_PLATFORM
 
@@ -788,7 +819,7 @@ async def receive_button_style(update: Update, context: ContextTypes.DEFAULT_TYP
     context.user_data["button_style"] = selected_style
     
     await query.message.edit_text(
-        "📢 Agora envie o **ID ou Username do canal/grupo** de destino onde a oferta será publicada:",
+        "📢 Agora envie o **ID ou Username do canal/grupo** de destino onde a oferta será publicada:\n\n*(Dica: Envie /cancel se quiser desistir)*",
         parse_mode="Markdown"
     )
     return ASK_CHANNEL
@@ -846,7 +877,7 @@ async def receive_channel_and_send(update: Update, context: ContextTypes.DEFAULT
             parse_mode="Markdown",
             reply_markup=reply_markup
         )
-        await update.message.reply_text(f"✅ Postagem criada e enviada com sucesso para `{target_channel}`!", parse_mode="Markdown")
+        await update.message.reply_text(f"✅ Postagem criada e enviada com sucesso para `{target_channel}`!\n\nEnvie /start para criar uma nova oferta.", parse_mode="Markdown")
     except Exception as e:
         await update.message.reply_text(f"❌ Erro ao enviar postagem: {e}")
 
@@ -855,7 +886,7 @@ async def receive_channel_and_send(update: Update, context: ContextTypes.DEFAULT
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
-    await update.message.reply_text("Operação cancelada.")
+    await update.message.reply_text("Operação cancelada. Envie /start para reiniciar.")
     return ConversationHandler.END
 
 # --- ROTA WEBHOOK DO MERCADO PAGO E HEALTH CHECK ---
@@ -887,7 +918,6 @@ def mercado_pago_webhook():
                 elif plan_key == "single_shein":
                     platforms = ["shein"]
                 elif plan_key == "duo":
-                    # Pega exatamente as duas plataformas escolhidas pelo usuário no fluxo anterior
                     platforms = metadata.get("platforms", ["shopee", "temu"])
                 elif plan_key == "pro":
                     platforms = ["shopee", "temu", "mercadolivre", "shein"]
@@ -917,9 +947,18 @@ def main():
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
         states={
-            SELECTING_PLATFORM: [CallbackQueryHandler(platform_callback)],
-            DUO_SELECT_FIRST: [CallbackQueryHandler(duo_first_choice, pattern="^duo1_")],
-            DUO_SELECT_SECOND: [CallbackQueryHandler(duo_second_choice, pattern="^duo2_")],
+            SELECTING_PLATFORM: [
+                CallbackQueryHandler(platform_callback),
+                CallbackQueryHandler(start, pattern="^back_start$")
+            ],
+            DUO_SELECT_FIRST: [
+                CallbackQueryHandler(duo_first_choice, pattern="^duo1_"),
+                CallbackQueryHandler(platform_callback, pattern="^menu_plans$")
+            ],
+            DUO_SELECT_SECOND: [
+                CallbackQueryHandler(duo_second_choice, pattern="^duo2_"),
+                CallbackQueryHandler(duo_first_choice, pattern="^buy_duo$")
+            ],
             ML_ASK_LINK: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_ml_link)],
             SHOPEE_ASK_LINK: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_shopee_link)],
             TEMU_ASK_LINK: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_temu_link)],
@@ -929,16 +968,18 @@ def main():
             ASK_IMAGE: [MessageHandler(filters.PHOTO, receive_image)],
             ASK_TITLE: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_title)],
             ASK_OLD_PRICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_old_price)],
-            ASK_BUTTON_STYLE: [CallbackQueryHandler(receive_button_style, pattern="^style_")],
+            ASK_BUTTON_STYLE: [
+                CallbackQueryHandler(receive_button_style, pattern="^style_")
+            ],
             ASK_PRICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_price)],
             ASK_CHANNEL: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_channel_and_send)],
         },
-        fallbacks=[CommandHandler("cancel", cancel)],
+        fallbacks=[CommandHandler("cancel", cancel), CommandHandler("start", start)],
     )
 
     application.add_handler(conv_handler)
 
-    print("🤖 Bot multiplataforma com seleção do Plano Duo iniciado no Render...")
+    print("🤖 Bot multiplataforma com navegação fluida iniciado no Render...")
     application.run_polling()
 
 if __name__ == "__main__":
