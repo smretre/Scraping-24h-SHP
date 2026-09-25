@@ -647,7 +647,7 @@ async def process_ml_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return ASK_BUTTON_STYLE
 
-      else:
+    else:
         context.user_data["old_price"] = ""
         await update.message.reply_text(
             f"💰 Preço atual detectado: `{info['price']}`\n\n"
