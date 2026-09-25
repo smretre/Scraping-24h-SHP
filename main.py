@@ -45,8 +45,6 @@ ASK_OLD_PRICE = 7
 ASK_PRICE = 8
 ASK_BUTTON_STYLE = 9
 ASK_CHANNEL = 10
-TEMU_ASK_PRICE = 11 
-TEMU_ASK_TITLE = 12
 DUO_SELECT_FIRST = 13   # Escolha da 1ª plataforma do Duo
 DUO_SELECT_SECOND = 14  # Escolha da 2ª plataforma do Duo
 
@@ -198,13 +196,10 @@ def get_shopee_product_info(product_url):
 
     return {"title": title, "image": image_url, "price": price_str, "link": short_link or final_url}
 
-# --- INTEGRAÇÃO COM A TEMU ---
+# --- INTEGRAÇÃO COM A TEMU (OBRIGA TÍTULO E IMAGEM MANUAIS) ---
 def get_temu_product_info(product_url):
-    title = None
-    image_url = None
-    price_str = None
     final_link = product_url
-
+    price_str = None
     try:
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -215,35 +210,17 @@ def get_temu_product_info(product_url):
         
         if resp.status_code == 200:
             html = resp.text
-            match_title = re.search(r'<meta property="og:title" content="([^"]+)"', html)
-            if match_title:
-                title = match_title.group(1)
-            else:
-                match_html_title = re.search(r'<title>([^<]+)</title>', html)
-                if match_html_title:
-                    title = match_html_title.group(1).replace(" - Temu Brazil", "").strip()
-
-            match_img = re.search(r'<meta property="og:image" content="([^"]+)"', html)
-            if match_img:
-                image_url = match_img.group(1)
-
             prices = re.findall(r'R\$\s*([0-9]+[.,][0-9]{2})', html)
             if prices:
                 valid_prices = [float(p.replace('.', '').replace(',', '.')) for p in prices if float(p.replace('.', '').replace(',', '.')) < 1000]
                 if valid_prices:
                     p_val = min(valid_prices)
                     price_str = f"R$ {p_val:.2f}".replace('.', ',')
-            
-            if not price_str:
-                match_json_price = re.search(r'"price":\s*"?([0-9.]+)"?', html)
-                if match_json_price:
-                    p_val = float(match_json_price.group(1))
-                    if p_val < 1000:
-                        price_str = f"R$ {p_val:.2f}".replace('.', ',')
     except Exception as e:
         print(f"⚠️ Erro ao extrair dados da Temu: {e}")
 
-    return {"title": title, "image": image_url, "price": price_str, "link": final_link}
+    # Retorna título e imagem como None propositalmente para forçar digitação/envio manual
+    return {"title": None, "image": None, "price": price_str, "link": final_link}
 
 # --- INTEGRAÇÃO COM A SHEIN ---
 def get_shein_product_info(product_url):
@@ -641,7 +618,7 @@ async def process_shopee_link(update: Update, context: ContextTypes.DEFAULT_TYPE
     await update.message.reply_text(f"💰 Preço detectado: `{product_info['price']}`\n\n❌ Digite e envie o **Preço Antigo** (ou `0` se não tiver):", parse_mode="Markdown")
     return ASK_OLD_PRICE
 
-# --- PROCESSAMENTO TEMU ATUALIZADO (IGUAL À SHOPEE) ---
+# --- PROCESSAMENTO TEMU (EXIGE IMAGEM E TÍTULO MANUAIS) ---
 async def process_temu_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     if not text:
@@ -652,23 +629,12 @@ async def process_temu_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     context.user_data["link"] = product_info["link"]
     context.user_data["price"] = product_info["price"] or ""
-    context.user_data["title"] = product_info["title"]
-    context.user_data["image_source"] = product_info["image"]
+    context.user_data["title"] = None          # Força manual
+    context.user_data["image_source"] = None   # Força manual
 
-    if not product_info["image"]:
-        await update.message.reply_text("📸 Não foi possível detectar a imagem. Envie a foto do produto:")
-        return ASK_IMAGE
-
-    if not product_info["title"]:
-        await update.message.reply_text("📝 Digite e envie o **título do produto**:", parse_mode="Markdown")
-        return ASK_TITLE
-
-    if not product_info["price"]:
-        await update.message.reply_text("💰 Digite e envie o **Preço Atual (Por)** do produto:", parse_mode="Markdown")
-        return ASK_PRICE
-
-    await update.message.reply_text(f"💰 Preço detectado: `{product_info['price']}`\n\n❌ Digite e envie o **Preço Antigo** (ou `0` se não tiver):", parse_mode="Markdown")
-    return ASK_OLD_PRICE
+    # Como a Temu gera títulos genéricos, obriga o envio da foto primeiro
+    await update.message.reply_text("📸 **Temu:** Como os títulos gerados são genéricos, envie a **foto do produto** manualmente:", parse_mode="Markdown")
+    return ASK_IMAGE
 
 async def process_shein_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
@@ -917,10 +883,23 @@ def main():
                 CallbackQueryHandler(duo_second_choice, pattern="^duo2_"),
                 CallbackQueryHandler(duo_first_choice, pattern="^buy_duo$")
             ],
-            ML_ASK_LINK: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_ml_link)],
-            SHOPEE_ASK_LINK: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_shopee_link)],
-            TEMU_ASK_LINK: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_temu_link)],
-            SHEIN_ASK_LINK: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_shein_link)],
+            # Adicionado suporte ao botão "Voltar" (back_start) em todos os estados de envio de link para eliminar o loop
+            ML_ASK_LINK: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, process_ml_link),
+                CallbackQueryHandler(platform_callback, pattern="^back_start$")
+            ],
+            SHOPEE_ASK_LINK: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, process_shopee_link),
+                CallbackQueryHandler(platform_callback, pattern="^back_start$")
+            ],
+            TEMU_ASK_LINK: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, process_temu_link),
+                CallbackQueryHandler(platform_callback, pattern="^back_start$")
+            ],
+            SHEIN_ASK_LINK: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, process_shein_link),
+                CallbackQueryHandler(platform_callback, pattern="^back_start$")
+            ],
             ASK_IMAGE: [MessageHandler(filters.PHOTO, receive_image)],
             ASK_TITLE: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_title)],
             ASK_OLD_PRICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_old_price)],
