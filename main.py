@@ -874,7 +874,7 @@ async def receive_button_style(update: Update, context: ContextTypes.DEFAULT_TYP
                 "Usa o comando `/canal @teucanal` para definir um canal válido onde o bot seja ADM.",
                 parse_mode="Markdown"
             )
-            return ConversationHandler.END
+            return ASK_CHANNEL
 
         # Se for admin, executa diretamente a lógica de publicação (copiada da função seguinte)
         title = context.user_data.get("title", "")
