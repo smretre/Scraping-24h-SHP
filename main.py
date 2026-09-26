@@ -101,83 +101,73 @@ def get_mercadolibre_product_info(product_url):
         if resp.status_code == 200:
             html = resp.text
             
-            # Extrair Título e Imagem
+            # Extrair Título
             match_title = re.search(r'<meta property="og:title" content="([^"]+)"', html)
             if match_title:
                 title = match_title.group(1)
 
+            # Extrair Imagem
             match_img = re.search(r'<meta property="og:image" content="([^"]+)"', html)
             if match_img:
                 image_url = match_img.group(1)
 
-            # EXTRAÇÃO CIRÚRGICA DO PREÇO ATUAL COM LOGS DE DEPURAÇÃO
-            match_main = re.search(r'class="(?:ui-pdp-price__second-line|ui-pdp-price__main-container)[^"]*"[^>]*>(.*?)</div>', html, re.DOTALL)
-            target_html = match_main.group(1) if match_main else html
-            
-            print(f"--- DEBUG MERCADO LIVRE ---")
-            print(f"Bloco principal encontrado? {'Sim' if match_main else 'Não (usando HTML completo)'}")
-
-            # Procura todas as frações dentro do alvo para vermos o que existe lá dentro
-            all_fractions = re.findall(r'class="andes-money-amount__fraction"[^>]*>([0-9.]+)</span>', target_html)
-            print(f"Frações encontradas no bloco: {all_fractions}")
-
-            match_fraction = re.search(r'class="andes-money-amount__fraction"[^>]*>([0-9.]+)</span>', target_html)
-            if match_fraction:
-                fraction_val = match_fraction.group(1).replace('.', '')
-                
-                sub_html = target_html[match_fraction.end():match_fraction.end()+80]
-                match_cents = re.search(r'class="andes-money-amount__cents"[^>]*>([0-9]+)</span>', sub_html)
-                cents_val = match_cents.group(1) if match_cents else "00"
-                
-                print(f"Fração capturada: {fraction_val} | Centavos capturados: {cents_val}")
-                
+            # 1. TENTATIVA MAIS SEGURA: Extrair do JSON-LD (Dados estruturados oficiais do produto)
+            json_ld_match = re.search(r'<script type="application/ld\+json"[^>]*>(.*?)</script>', html, re.DOTALL)
+            if json_ld_match:
                 try:
-                    p_val = float(f"{fraction_val}.{cents_val}")
-                    print(f"Valor numérico montado: {p_val}")
-                    if p_val >= 1.0:
-                        price_str = f"R$ {p_val:.2f}".replace('.', ',')
-                except ValueError as ve:
-                    print(f"Erro ao converter preço: {ve}")
-
-            # Fallback geral
-            if not price_str:
-                match_price = re.search(r'<meta itemprop="price" content="([0-9.]+)"', html)
-                if match_price:
-                    p_val = float(match_price.group(1))
-                    print(f"Preço obtido via itemprop: {p_val}")
-                    if p_val >= 1.0:
-                        price_str = f"R$ {p_val:.2f}".replace('.', ',')
-
-            # Preço Antigo
-            match_old = re.search(r'<(?:s|span)[^>]*class="[^"]*(?:andes-money-amount--previous|andes-money-amount__previous)[^"]*"[^>]*>.*?<span[^>]*class="andes-money-amount__fraction"[^>]*>([0-9.]+)</span>', html, re.DOTALL)
-            if match_old:
-                old_frac = match_old.group(1).replace('.', '')
-                sub_old = html[match_old.start():match_old.end()]
-                match_old_cents = re.search(r'class="andes-money-amount__cents"[^>]*>([0-9]+)</span>', sub_old)
-                old_cents = match_old_cents.group(1) if match_old_cents else "00"
-                
-                try:
-                    old_val = float(f"{old_frac}.{old_cents}")
-                    print(f"Preço antigo detetado: {old_val}")
-                    if price_str:
-                        current_float = float(price_str.replace('R$ ', '').replace('.', '').replace(',', '.'))
-                        if old_val > current_float:
-                            old_price_str = f"R$ {old_val:.2f}".replace('.', ',')
-                except ValueError:
+                    data = json.loads(json_ld_match.group(1))
+                    # O JSON-LD pode ser um dicionário ou lista
+                    items = data if isinstance(data, list) else [data]
+                    for item in items:
+                        if item.get("@type") == "Product" or "offers" in item:
+                            offers = item.get("offers", {})
+                            if isinstance(offers, list):
+                                offers = offers[0]
+                            
+                            # Preço atual
+                            p_val = offers.get("price") or offers.get("lowPrice")
+                            if p_val:
+                                price_str = f"R$ {float(p_val):.2f}".replace('.', ',')
+                            
+                            # Preço antigo (se houver alta)
+                            high_val = offers.get("highPrice")
+                            if high_val and float(high_val) > float(p_val or 0):
+                                old_price_str = f"R$ {float(high_val):.2f}".replace('.', ',')
+                            break
+                except Exception:
                     pass
-            print(f"---------------------------")
+
+            # 2. SE O JSON-LD FALHAR, procuramos de forma restrita na tag itemprop="price"
+            if not price_str:
+                meta_price = re.search(r'<meta itemprop="price" content="([0-9.]+)"', html)
+                if meta_price:
+                    p_val = float(meta_price.group(1))
+                    if p_val >= 10.0:
+                        price_str = f"R$ {p_val:.2f}".replace('.', ',')
+
+            # 3. VERIFICAR PREÇO ANTIGO ESPECÍFICO (apenas se houver etiqueta de preço riscado real)
+            if not old_price_str:
+                match_old = re.search(r'<(?:s|span)[^>]*class="[^"]*andes-money-amount--previous[^"]*"[^>]*>.*?<span[^>]*class="andes-money-amount__fraction"[^>]*>([0-9.]+)</span>', html, re.DOTALL)
+                if match_old:
+                    old_frac = match_old.group(1).replace('.', '')
+                    sub_old = html[match_old.start():match_old.end()]
+                    match_cents = re.search(r'class="andes-money-amount__cents"[^>]*>([0-9]+)</span>', sub_old)
+                    old_cents = match_cents.group(1) if match_cents else "00"
+                    old_val = float(f"{old_frac}.{old_cents}")
+                    if price_str and old_val > float(price_str.replace('R$ ', '').replace('.', '').replace(',', '.')):
+                        old_price_str = f"R$ {old_val:.2f}".replace('.', ',')
 
     except Exception as e:
         print(f"⚠️ Erro ao extrair dados do Mercado Livre: {e}")
 
     return {
-        "title": title,
+        "title": title, 
         "image": image_url,
-        "price": price_str,
-        "old_price": old_price_str,
+        "price": price_str,  
+        "old_price": old_price_str,  
         "link": final_link
     }
-
+    
 # --- INTEGRAÇÃO COM A API DA SHOPEE ---
 def generate_shopee_signature(app_id, secret, payload, timestamp):
     factor = f"{app_id}{timestamp}{payload}{secret}"
