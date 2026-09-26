@@ -858,39 +858,33 @@ async def receive_button_style(update: Update, context: ContextTypes.DEFAULT_TYP
     canal_salvo = get_user_channel(user_id)
 
     if canal_salvo:
-        # 🚀 Canal já existe! Guarda-o no contexto e salta a pergunta
+        # 🚀 Canal salvo detetado! Passamos o controlo diretamente para a função de envio
         context.user_data["target_channel"] = canal_salvo
         await query.message.edit_text(
             f"🚀 Canal salvo detetado (`{canal_salvo}`). A processar a publicação...",
             parse_mode="Markdown"
         )
         
-        # Como o bot vai saltar o ASK_CHANNEL, precisamos de simular a verificação de admin 
-        # e o envio que estariam na função seguinte:
-        is_admin = await verify_bot_admin(context.bot, canal_salvo)
-        if not is_admin:
-            await query.message.edit_text(
-                f"❌ O bot **não é Administrador** no canal `{canal_salvo}`.\n"
-                "Usa o comando `/canal @teucanal` para definir um canal válido onde o bot seja ADM.",
-                parse_mode="Markdown"
-            )
-            return ASK_CHANNEL
+        # Criação de classes auxiliares para simular a mensagem de texto e avançar sem erros
+        class FakeMessage:
+            def __init__(self, message, user, text):
+                self.text = text
+                self._message = message
+                self.from_user = user
+            async def reply_text(self, *args, **kwargs):
+                return await self._message.reply_text(*args, **kwargs)
 
-        # Se for admin, executa diretamente a lógica de publicação (copiada da função seguinte)
-        title = context.user_data.get("title", "")
-        old_price = context.user_data.get("old_price", "")
-        price = context.user_data.get("price", "")
-        link = context.user_data.get("link", "")
-        img_src = context.user_data.get("image_source", "")
-        platform = context.user_data.get("platform", "")
-        btn_style = context.user_data.get("button_style", None)
+        class FakeUpdate:
+            def __init__(self, query_obj, text):
+                self.effective_user = query_obj.from_user
+                self.message = FakeMessage(query_obj.message, query_obj.from_user, text)
 
-        card_img = generate_card_img(img_src, price, old_price, platform)
-        # (continua o resto do código de envio que já tens na função receive_channel_and_send)
+        fake_update = FakeUpdate(query, canal_salvo)
         
-        return ConversationHandler.END # ou o estado final correspondente
+        # Chama a tua função de envio original sem repetição de código!
+        return await receive_channel_and_send(fake_update, context)
     else:
-        # ⚠️ Se não tem canal salvo, pergunta normalmente (comportamento original)
+        # ⚠️ Se não tem canal salvo, pede normalmente pela primeira vez
         await query.message.edit_text(
             "📢 Agora envie o **ID ou Username do canal/grupo** de destino onde a oferta será publicada:\n\n*(Dica: Envie /cancel se quiser desistir)*",
             parse_mode="Markdown"
