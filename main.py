@@ -434,6 +434,17 @@ async def support(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown",
         reply_markup=reply_markup
     )
+
+async def comando_canal(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    # context.args já pega tudo o que vem escrito depois do comando /canal de forma limpa!
+    if context.args:
+        novo_canal = context.args[0]
+        save_user_channel(user_id, novo_canal)
+        
+        await update.message.reply_text(f"✅ Canal `{novo_canal}` guardado com sucesso!", parse_mode="Markdown")
+    else:
+        await update.message.reply_text("⚠️ Usa no formato correto, ex: `/canal @teucanal`", parse_mode="Markdown")
     
 async def platform_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -843,18 +854,56 @@ async def receive_button_style(update: Update, context: ContextTypes.DEFAULT_TYP
     selected_style = style_map.get(query.data, None)
     context.user_data["button_style"] = selected_style
     
-    await query.message.edit_text(
-        "📢 Agora envie o **ID ou Username do canal/grupo** de destino onde a oferta será publicada:\n\n*(Dica: Envie /cancel se quiser desistir)*",
-        parse_mode="Markdown"
-    )
-    return ASK_CHANNEL
+    user_id = query.from_user.id
+    canal_salvo = get_user_channel(user_id)
+
+    if canal_salvo:
+        # 🚀 Canal já existe! Guarda-o no contexto e salta a pergunta
+        context.user_data["target_channel"] = canal_salvo
+        await query.message.edit_text(
+            f"🚀 Canal salvo detetado (`{canal_salvo}`). A processar a publicação...",
+            parse_mode="Markdown"
+        )
+        
+        # Como o bot vai saltar o ASK_CHANNEL, precisamos de simular a verificação de admin 
+        # e o envio que estariam na função seguinte:
+        is_admin = await verify_bot_admin(context.bot, canal_salvo)
+        if not is_admin:
+            await query.message.edit_text(
+                f"❌ O bot **não é Administrador** no canal `{canal_salvo}`.\n"
+                "Usa o comando `/canal @teucanal` para definir um canal válido onde o bot seja ADM.",
+                parse_mode="Markdown"
+            )
+            return ConversationHandler.END
+
+        # Se for admin, executa diretamente a lógica de publicação (copiada da função seguinte)
+        title = context.user_data.get("title", "")
+        old_price = context.user_data.get("old_price", "")
+        price = context.user_data.get("price", "")
+        link = context.user_data.get("link", "")
+        img_src = context.user_data.get("image_source", "")
+        platform = context.user_data.get("platform", "")
+        btn_style = context.user_data.get("button_style", None)
+
+        card_img = generate_card_img(img_src, price, old_price, platform)
+        # (continua o resto do código de envio que já tens na função receive_channel_and_send)
+        
+        return ConversationHandler.END # ou o estado final correspondente
+    else:
+        # ⚠️ Se não tem canal salvo, pergunta normalmente (comportamento original)
+        await query.message.edit_text(
+            "📢 Agora envie o **ID ou Username do canal/grupo** de destino onde a oferta será publicada:\n\n*(Dica: Envie /cancel se quiser desistir)*",
+            parse_mode="Markdown"
+        )
+        return ASK_CHANNEL
 
 async def receive_channel_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     target_channel = update.message.text.strip()
     
-    # 💾 Salva o canal do utilizador automaticamente para as próximas vezes
+    # 💾 Guarda o canal automaticamente para nunca mais precisar de pedir
     save_user_channel(user_id, target_channel)
+    context.user_data["target_channel"] = target_channel
     
     await update.message.reply_text("🔍 Verificando permissões de Administrador...")
     is_admin = await verify_bot_admin(context.bot, target_channel)
@@ -866,6 +915,8 @@ async def receive_channel_and_send(update: Update, context: ContextTypes.DEFAULT
             parse_mode="Markdown"
         )
         return ASK_CHANNEL
+
+    # Se for administrador, continua o fluxo normal de envio da oferta...
 
     title = context.user_data.get("title", "🔥 Super Oferta")
     old_price = context.user_data.get("old_price", "0")
@@ -912,18 +963,7 @@ async def receive_channel_and_send(update: Update, context: ContextTypes.DEFAULT
 
     context.user_data.clear()
     return ConversationHandler.END
-
-async def comando_canal(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    # context.args já pega tudo o que vem escrito depois do comando /canal de forma limpa!
-    if context.args:
-        novo_canal = context.args[0]
-        save_user_channel(user_id, novo_canal)
-        
-        await update.message.reply_text(f"✅ Canal `{novo_canal}` guardado com sucesso!", parse_mode="Markdown")
-    else:
-        await update.message.reply_text("⚠️ Usa no formato correto, ex: `/canal @teucanal`", parse_mode="Markdown")
-
+    
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
     await update.message.reply_text("Operação cancelada. Envie /start para reiniciar.")
