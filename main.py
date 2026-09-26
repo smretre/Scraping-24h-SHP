@@ -468,7 +468,24 @@ async def remove_channel_callback(update: Update, context: ContextTypes.DEFAULT_
         "ou podes usar `/canal @novocanal` a qualquer momento.",
         parse_mode="Markdown"
     )
-    
+
+async def comando_canal(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    # context.args pega tudo o que o utilizador escreve logo à frente do comando /canal
+    if context.args:
+        novo_canal = context.args[0]
+        save_user_channel(user_id, novo_canal)
+        
+        await update.message.reply_text(
+            f"✅ Canal `{novo_canal}` guardado com sucesso para as tuas próximas publicações!", 
+            parse_mode="Markdown"
+        )
+    else:
+        await update.message.reply_text(
+            "⚠️ Formato incorreto. Usa assim:\n`/canal @teucanal`", 
+            parse_mode="Markdown"
+        )
+
 async def platform_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -1087,6 +1104,7 @@ def main():
 
     application.add_handler(CommandHandler("meucanal", comando_meucanal))
     application.add_handler(CallbackQueryHandler(remove_channel_callback, pattern="^remove_user_channel$"))
+    application.add_handler(CommandHandler("canal", comando_canal))
     application.add_handler(CommandHandler("suporte", support))
     application.add_handler(conv_handler)
 
