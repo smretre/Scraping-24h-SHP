@@ -58,6 +58,30 @@ PLAN_PRICES = {
     "pro": 59.90       
 }
 
+CHANNELS_FILE = "user_channels.json"
+
+def load_user_channels():
+    """Carrega o dicionário de canais salvos do ficheiro JSON."""
+    if os.path.exists(CHANNELS_FILE):
+        try:
+            with open(CHANNELS_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+    return {}
+
+def save_user_channel(user_id, channel_username):
+    """Guarda ou atualiza o canal associado ao ID do utilizador."""
+    channels = load_user_channels()
+    channels[str(user_id)] = channel_username
+    with open(CHANNELS_FILE, "w", encoding="utf-8") as f:
+        json.dump(channels, f, ensure_ascii=False, indent=4)
+
+def get_user_channel(user_id):
+    """Retorna o canal salvo do utilizador, ou None se não existir."""
+    channels = load_user_channels()
+    return channels.get(str(user_id))
+
 # --- FUNÇÕES DE CONTROLE DE ACESSO E PLANOS ---
 def check_user_access(user_id, platform):
     if user_id in ADMIN_IDS:
@@ -826,7 +850,11 @@ async def receive_button_style(update: Update, context: ContextTypes.DEFAULT_TYP
     return ASK_CHANNEL
 
 async def receive_channel_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
     target_channel = update.message.text.strip()
+    
+    # 💾 Salva o canal do utilizador automaticamente para as próximas vezes
+    save_user_channel(user_id, target_channel)
     
     await update.message.reply_text("🔍 Verificando permissões de Administrador...")
     is_admin = await verify_bot_admin(context.bot, target_channel)
@@ -884,6 +912,17 @@ async def receive_channel_and_send(update: Update, context: ContextTypes.DEFAULT
 
     context.user_data.clear()
     return ConversationHandler.END
+
+async def comando_canal(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    # context.args já pega tudo o que vem escrito depois do comando /canal de forma limpa!
+    if context.args:
+        novo_canal = context.args[0]
+        save_user_channel(user_id, novo_canal)
+        
+        await update.message.reply_text(f"✅ Canal `{novo_canal}` guardado com sucesso!", parse_mode="Markdown")
+    else:
+        await update.message.reply_text("⚠️ Usa no formato correto, ex: `/canal @teucanal`", parse_mode="Markdown")
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
