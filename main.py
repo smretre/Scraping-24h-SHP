@@ -435,16 +435,39 @@ async def support(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=reply_markup
     )
 
-async def comando_canal(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def comando_meucanal(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    # context.args já pega tudo o que vem escrito depois do comando /canal de forma limpa!
-    if context.args:
-        novo_canal = context.args[0]
-        save_user_channel(user_id, novo_canal)
-        
-        await update.message.reply_text(f"✅ Canal `{novo_canal}` guardado com sucesso!", parse_mode="Markdown")
+    canal_atual = get_user_channel(user_id)
+    
+    if canal_atual:
+        keyboard = [[InlineKeyboardButton("🗑️ Remover Canal Atual", callback_data="remove_user_channel")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.message.reply_text(
+            f"📢 O teu canal/grupo de destino configurado é: `{canal_atual}`",
+            parse_mode="Markdown",
+            reply_markup=reply_markup
+        )
     else:
-        await update.message.reply_text("⚠️ Usa no formato correto, ex: `/canal @teucanal`", parse_mode="Markdown")
+        await update.message.reply_text(
+            "⚠️ Ainda não tens nenhum canal configurado.\n"
+            "Usa o comando `/canal @teucanal` para definir um.",
+            parse_mode="Markdown"
+        )
+
+async def remove_channel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user_id = update.effective_user.id
+    
+    # Remove o canal definindo como None ou apagando do ficheiro JSON
+    save_user_channel(user_id, None)
+    
+    await query.message.edit_text(
+        "🗑️ Canal removido com sucesso!\n\n"
+        "Da próxima vez que fizeres uma publicação, o bot voltará a pedir o canal, "
+        "ou podes usar `/canal @novocanal` a qualquer momento.",
+        parse_mode="Markdown"
+    )
     
 async def platform_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -1062,6 +1085,8 @@ def main():
         fallbacks=[CommandHandler("cancel", cancel), CommandHandler("start", start)],
     )
 
+    application.add_handler(CommandHandler("meucanal", comando_meucanal))
+    application.add_handler(CallbackQueryHandler(remove_channel_callback, pattern="^remove_user_channel$"))
     application.add_handler(CommandHandler("suporte", support))
     application.add_handler(conv_handler)
 
